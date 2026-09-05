@@ -1,0 +1,21 @@
+# Skills
+
+This directory contains the set of skills I want to include across all code sessions. Most skills are sourced from other authors; attribution can be traced via the skills-lock.json file.
+
+Some skills have been slightly modified to behave my liking.
+
+## Workflow
+
+Update the skills with 
+
+```sh
+pnpm skills:sync
+```
+
+Review the changes, then commit and push the desired final state.
+
+## Installing
+
+```sh
+pnpx skills@latest add nickgros/agent-plugins
+```
