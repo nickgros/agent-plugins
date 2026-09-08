@@ -1,0 +1,22 @@
+#!/usr/bin/env python3
+"""asbx — agent sandbox VMs on Incus.
+
+Entry point only. All logic lives in asbxlib/ next to this file; `asbx install`
+symlinks this file into ~/.local/bin, so the package is located from the
+resolved path of this script rather than from sys.path[0].
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+try:
+    import yaml  # noqa: F401  — asbxlib needs it; fail with a fixable message
+except ImportError:
+    print("asbx requires PyYAML: pip install --user pyyaml", file=sys.stderr)
+    sys.exit(1)
+
+from asbxlib.cli import main
+
+if __name__ == "__main__":
+    sys.exit(main())
