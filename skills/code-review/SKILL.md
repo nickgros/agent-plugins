@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: "Review the changes since a fixed point (commit, branch, tag, or merge-base) along two axes: Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/spec asked for?). Runs both reviews in parallel sub-agents and reports them side by side. Use when the user wants to review a branch, a PR, work-in-progress changes, or asks to \"review since X\"."
+description: 'Review the changes since a fixed point (commit, branch, tag, or merge-base) along two axes: Standards (does the code follow this repo''s documented coding standards?) and Spec (does the code match what the originating issue/spec asked for?). Runs both reviews in parallel sub-agents and reports them side by side. Use when the user wants to review a branch, a PR, work-in-progress changes, or asks to "review since X".'
 ---
 
 Two-axis review of the diff between `HEAD` and a fixed point the user supplies:
@@ -40,7 +40,7 @@ On top of whatever the repo documents, the Standards axis always carries the **s
 - **The repo overrides.** A documented repo standard always wins; where it endorses something the baseline would flag, suppress the smell.
 - **Always a judgement call.** Each smell is a labelled heuristic ("possible Feature Envy"), never a hard violation. Like any standard here, skip anything tooling already enforces.
 
-Each smell reads *what it is* → *how to fix*; match it against the diff:
+Each smell reads _what it is_ → _how to fix_; match it against the diff:
 
 - **Mysterious Name**: a function, variable, or type whose name doesn't reveal what it does or holds. → rename it; if no honest name comes, the design's murky.
 - **Duplicated Code**: the same logic shape appears in more than one hunk or file in the change. → extract the shared shape, call it from both.
@@ -55,7 +55,7 @@ Each smell reads *what it is* → *how to fix*; match it against the diff:
 - **Middle Man**: a class or function that mostly just delegates onward. → cut it, call the real target direct.
 - **Refused Bequest**: a subclass or implementer that ignores or overrides most of what it inherits. → drop the inheritance, use composition.
 
-### 4. Spawn both sub-agents in parallel
+### 4. Spawn sub-agents in parallel
 
 **Standards sub-agent prompt** should include:
 
@@ -71,17 +71,24 @@ Each smell reads *what it is* → *how to fix*; match it against the diff:
 
 If the spec is missing, skip the Spec sub-agent and note this in the final report.
 
+**Test quality sub-agent prompt** should include:
+
+- The diff command and commit list.
+- The path or fetched contents of the spec (if it exists).
+- The brief: "Report: (a) test cases that cover the changes and spec; (b) missing test cases; (c) any quality issues with the tests, including mislabeled tests, vacuous tests, and missing expected tests. Quote the specific test files and/or test names for each finding. Under 400 words."
+
 ### 5. Aggregate
 
 Present the two reports under `## Standards` and `## Spec` headings, verbatim or lightly cleaned. Do **not** merge or rerank findings, because the two axes are deliberately separate (see _Why two axes_).
 
 End with a one-line summary: total findings per axis, and the worst issue _within each axis_ (if any). Don't pick a single winner across axes: that's the reranking the separation exists to prevent.
 
-## Why two axes
+## Why multiple axes
 
-A change can pass one axis and fail the other:
+A change can pass one axis and fail others:
 
 - Code that follows every standard but implements the wrong thing → **Standards pass, Spec fail.**
 - Code that does exactly what the issue asked but breaks the project's conventions → **Spec pass, Standards fail.**
+- Code passes specs and standards axes, but tests are mislabeled, vacuous, or missing - **Test quality fail**
 
 Reporting them separately stops one axis from masking the other.
