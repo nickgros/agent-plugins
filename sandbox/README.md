@@ -99,9 +99,19 @@ PATH, the qemu driver, `/dev/kvm`, PyYAML, the auth key, SSH key/`Include`
 line, the base image alias, the network ACL (and whether its rules match what's
 currently computed), the readability of every mount any manifest would attach
 (not just `defaults.mounts`), the storage pool driver, and the state of every
-manifest's instance. `--fix` repairs the two host-side items it can: it creates
-or rewrites the network ACL from the currently computed drop sets, and prepends
-the `~/.ssh/config` Include line (creating that file at mode `0600` if absent).
+manifest's instance. For every `Running` instance, it also probes IPv4
+networking from inside the guest (`asbxlib/netcheck.py`): a live default
+route, then (only if that holds) a TCP handshake to a public host. Both are
+black-box — no assumption about which host firewall tool, if any, is
+filtering the bridge — so they catch the same failure whether the cause is a
+dead DHCP lease, an Incus ACL misconfiguration, or (the common case) a host
+firewall's default-deny policy silently dropping the bridge's DHCP or
+forwarded traffic (e.g. `ufw` needs explicit `ufw allow in on <bridge> port
+67 proto udp`/`port 53` and `ufw route allow in on <bridge> out on
+<uplink>`; `ufw` does not open these for a new bridge on its own). `--fix`
+repairs the two host-side items it can: it creates or rewrites the network
+ACL from the currently computed drop sets, and prepends the
+`~/.ssh/config` Include line (creating that file at mode `0600` if absent).
 
 ## Tailscale tailnet policy
 
@@ -334,3 +344,22 @@ No per-IDE credentials needed.
   SSO token is cached. Set `aws.profile` to the `source_profile` name; it's
   used only by this auth provider, not by `harness_env.AWS_PROFILE` (which
   stays pointed at the role profile for actual guest usage).
+- **Guest has no network** (`asbx doctor` fails `guest has IPv4 default
+  route` or `guest IPv4 internet egress`). Incus manages its own `nft`
+  tables for the bridge (masquerade, `dnsmasq` DHCP/DNS) but never touches
+  the host's general-purpose firewall, so a host firewall with a
+  default-deny policy silently drops bridge traffic Incus never asked it to
+  allow. With `ufw`, two gaps are common: its default `after.rules` drop
+  inbound DHCP (port 67/udp) before any `allow` rule is even consulted, and
+  a `deny (routed)` default policy blackholes everything the bridge tries
+  to forward outbound except ICMP and already-established connections.
+  Fix (substitute your bridge name and uplink interface, e.g. `incusbr0`/
+  `eth0`):
+  ```
+  sudo ufw allow in on <bridge> to any port 67 proto udp
+  sudo ufw allow in on <bridge> to any port 53
+  sudo ufw route allow in on <bridge> out on <uplink>
+  sudo ufw reload
+  ```
+  Confirm the uplink interface with `ip route get 1.1.1.1` first — a rule
+  scoped to the wrong interface silently does nothing.

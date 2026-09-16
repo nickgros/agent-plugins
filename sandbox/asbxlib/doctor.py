@@ -12,6 +12,7 @@ from . import config
 from . import guest
 from . import sshconf
 from . import netacl
+from . import netcheck
 from . import manifest as manifest_mod
 
 
@@ -135,6 +136,19 @@ def cmd_doctor(incus: Incus, cfg: Optional[dict], fix: bool) -> int:
         state = incus.instance_state(instance) if exists else "absent"
         egress_mode = incus.config_get(instance, "user.asbx.egress_mode") if exists else "n/a"
         results.append(("PASS", f"manifest {group}: instance {instance} state={state} egress_mode={egress_mode}"))
+
+        if state == "Running":
+            has_route = netcheck.guest_has_ipv4_default_route(incus, instance)
+            check(f"{instance}: guest has IPv4 default route", has_route,
+                  "no default IPv4 route in the guest; DHCP likely never completed "
+                  "(check whatever filters the bridge's inbound DHCP traffic, e.g. a "
+                  "host firewall's default-deny policy on port 67/udp)")
+            if has_route:
+                has_egress = netcheck.guest_has_ipv4_egress(incus, instance)
+                check(f"{instance}: guest IPv4 internet egress", has_egress,
+                      "TCP handshake to api.github.com:443 timed out; check whatever "
+                      "filters forwarded/routed traffic from the bridge to your "
+                      "uplink (e.g. a host firewall's default-deny FORWARD policy)")
 
     for status, msg in results:
         print(f"{status:4} {msg}")
