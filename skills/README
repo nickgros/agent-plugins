@@ -6,7 +6,7 @@ Some skills have been slightly modified to behave my liking.
 
 ## Workflow
 
-Update the skills with 
+Update the skills with
 
 ```sh
 pnpm skills:sync
@@ -19,3 +19,7 @@ Review the changes, then commit and push the desired final state.
 ```sh
 pnpx skills@latest add nickgros/agent-plugins
 ```
+
+## Contributing
+
+Add a new external skill to this repo by adding it to the project with `pnpx skills@latest add`, then by running `skills:sync`.
