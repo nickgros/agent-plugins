@@ -22,4 +22,4 @@ pnpx skills@latest add nickgros/agent-plugins
 
 ## Contributing
 
-Add a new external skill to this repo by adding it to the project with `pnpx skills@latest add`, then by running `skills:sync`.
+Add a new external skill to this repo by adding it to the project with `pnpx skills@latest add`, then by running `pnpm skills:sync`.
