@@ -73,12 +73,6 @@
       "skillPath": "skills/engineering/improve-codebase-architecture/SKILL.md",
       "computedHash": "2449db6ab1ded9581f69fcc56c1f64818112d05e271fd4c5da23c6523f9d3d9d"
     },
-    "ponytail-review": {
-      "source": "DietrichGebert/ponytail",
-      "sourceType": "github",
-      "skillPath": "skills/ponytail-review/SKILL.md",
-      "computedHash": "4646594fcd75455533f7ff1425f4f1c5ba0fa65f88241bf262b1c4fc275f049a"
-    },
     "prototype": {
       "source": "mattpocock/skills",
       "sourceType": "github",

@@ -1,15 +1,21 @@
 ---
 name: code-review
-description: 'Review the changes since a fixed point (commit, branch, tag, or merge-base) along three axes: Standards (does the code follow this repo''s documented coding standards?), Spec (does the code match what the originating issue/spec asked for?), and Test Quality (are the tests thorough, correctly labeled, and of high quality?). Runs reviews in parallel sub-agents and reports them side by side. Use when the user wants to review a branch, a PR, work-in-progress changes, or asks to "review since X".'
+description: 'Review a diff since a fixed point (commit, branch, tag, merge-base) across parallel axes: scope, spec, correctness, security, standards, testability, test quality. Use when the user wants a branch, PR, or work-in-progress reviewed, or says "review since X".'
 ---
 
-Three-axis review of the diff between `HEAD` and a fixed point the user supplies:
+Review the diff between `HEAD` and a fixed point the user supplies. Each axis runs as its own parallel sub-agent with its own brief under `axes/`, so no axis's findings colour another's. This skill selects the axes, dispatches them, and aggregates.
 
-- **Standards**: does the code conform to this repo's documented coding standards?
-- **Spec**: does the code faithfully implement the originating issue / spec?
-- **Test Quality**: are the tests thorough, correctly labeled, and of high quality?
+| Axis | Question | Runs when |
+| --- | --- | --- |
+| **Scope** | Can a reviewer take this in one pass, or should it be a stack? | >400 changed lines (excluding lockfiles and generated files), **or** >15 files, **or** the commits span more than one unrelated concern |
+| **Spec** | Does it do what the spec asked? | a spec is found (step 2) |
+| **Correctness** | Is it right, independent of the spec? | always |
+| **Security** | Can untrusted input reach a dangerous operation? | the diff touches input parsing or request handlers, authn/authz, crypto, secrets or config, shell/SQL/path/URL construction, deserialization, or dependency manifests |
+| **Standards** | Is it well made, per the repo's standards and the smell baseline? | always |
+| **Testability** | Can the production code be unit-tested cheaply through its interface? | the diff adds or changes production logic (not config, docs, or generated files) |
+| **Test Quality** | Are the tests thorough, correctly labeled, and of high quality? | the diff touches production logic or tests |
 
-Both axes run as **parallel sub-agents** so they don't pollute each other's context, then this skill aggregates their findings.
+The brief for each axis is `axes/<axis>.md` (`test-quality.md` for Test Quality), relative to this skill's directory.
 
 The issue tracker should have been provided to you. If `docs/agents/issue-tracker.md` is missing, tell the user to run `/setup-matt-pocock-skills`.
 
@@ -30,66 +36,40 @@ Look for the originating spec, in this order:
 1. Issue references in the commit messages (`#123`, `Closes #45`, GitLab `!67`, etc.), fetched via the workflow in `docs/agents/issue-tracker.md`.
 2. A path the user passed as an argument.
 3. A spec file under `docs/`, `specs/`, or `.scratch/` matching the branch name or feature.
-4. If nothing is found, ask the user where the spec is. If they say there isn't one, the **Spec** sub-agent will skip and report "no spec available".
+4. If nothing is found, ask the user where the spec is. If they say there isn't one, Spec is skipped with "no spec available".
 
 ### 3. Identify the standards sources
 
-Anything in the repo that documents how code should be written, such as `CODING_STANDARDS.md` or `CONTRIBUTING.md`.
+Anything in the repo that documents how code should be written, such as `CODING_STANDARDS.md` or `CONTRIBUTING.md`. The smell baseline that applies on top of them lives in `axes/standards.md`.
 
-On top of whatever the repo documents, the Standards axis always carries the **smell baseline** below: a fixed set of Fowler code smells (_Refactoring_, ch.3) that applies even when a repo documents nothing. Two rules bind it:
+### 4. Select the axes
 
-- **The repo overrides.** A documented repo standard always wins; where it endorses something the baseline would flag, suppress the smell.
-- **Always a judgement call.** Each smell is a labelled heuristic ("possible Feature Envy"), never a hard violation. Like any standard here, skip anything tooling already enforces.
+Classify the diff with `git diff --numstat <fixed-point>...HEAD` plus the commit list, and apply the _Runs when_ column. Done when every axis is marked **run** or **skipped** with the condition it failed.
 
-Each smell reads _what it is_ → _how to fix_; match it against the diff:
+### 5. Dispatch in parallel
 
-- **Mysterious Name**: a function, variable, or type whose name doesn't reveal what it does or holds. → rename it; if no honest name comes, the design's murky.
-- **Duplicated Code**: the same logic shape appears in more than one hunk or file in the change. → extract the shared shape, call it from both.
-- **Feature Envy**: a method that reaches into another object's data more than its own. → move the method onto the data it envies.
-- **Data Clumps**: the same few fields or params keep travelling together (a type wanting to be born). → bundle them into one type, pass that.
-- **Primitive Obsession**: a primitive or string standing in for a domain concept that deserves its own type. → give the concept its own small type.
-- **Repeated Switches**: the same `switch`/`if`-cascade on the same type recurs across the change. → replace with polymorphism, or one map both sites share.
-- **Shotgun Surgery**: one logical change forces scattered edits across many files in the diff. → gather what changes together into one module.
-- **Divergent Change**: one file or module is edited for several unrelated reasons. → split so each module changes for one reason.
-- **Speculative Generality**: abstraction, parameters, or hooks added for needs the spec doesn't have. → delete it; inline back until a real need shows.
-- **Message Chains**: long `a.b().c().d()` navigation the caller shouldn't depend on. → hide the walk behind one method on the first object.
-- **Middle Man**: a class or function that mostly just delegates onward. → cut it, call the real target direct.
-- **Refused Bequest**: a subclass or implementer that ignores or overrides most of what it inherits. → drop the inheritance, use composition.
-
-### 4. Spawn sub-agents in parallel
-
-**Standards sub-agent prompt** should include:
-
-- The full diff command and commit list.
-- The list of standards-source files you found in step 3, **plus the smell baseline from step 3** pasted in full (the sub-agent has no other access to it).
-- The brief: "Report, per file/hunk where relevant, (a) every place the diff violates a documented standard: cite the standard (file + the rule); and (b) any baseline smell you spot: name it and quote the hunk. Distinguish hard violations from judgement calls: documented-standard breaches can be hard, but baseline smells are always judgement calls, and a documented repo standard overrides the baseline. Skip anything tooling enforces. Under 400 words."
-
-**Spec sub-agent prompt** should include:
+Spawn one sub-agent per selected axis, all in a single batch. Each prompt carries:
 
 - The diff command and commit list.
-- The path or fetched contents of the spec.
-- The brief: "Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for (scope creep); (c) requirements that look implemented but where the implementation looks wrong. Quote the spec line for each finding. Under 400 words."
+- The absolute path of the axis brief, with the instruction to read it first and follow it: it holds the axis's criteria, finding format, and word budget.
+- For Spec and Test Quality: the path or fetched contents of the spec.
+- For Standards: the standards-source files from step 3.
+- Read-only: sub-agents read code and git history, and leave running tests and editing files to the user, since parallel agents sharing a tree collide.
 
-If the spec is missing, skip the Spec sub-agent and note this in the final report.
+### 6. Aggregate
 
-**Test quality sub-agent prompt** should include:
+Present the reports under `##` headings in this order, verbatim or lightly cleaned: **Scope**, **Spec**, **Correctness**, **Security**, **Standards**, **Testability**, **Test Quality**. The order runs from _is it the right change_ through _is it right_ to _is it well made_. Keep each finding under the axis that reported it and in that axis's order (see _Why multiple axes_).
 
-- The diff command and commit list.
-- The path or fetched contents of the spec (if it exists).
-- The brief: "Report: (a) test cases that cover the changes and spec; (b) missing test cases; (c) any quality issues with the tests, including mislabeled tests, vacuous tests, and missing expected tests. Quote the specific test files and/or test names for each finding. Under 400 words."
-
-### 5. Aggregate
-
-Present the reports under `## Standards`, `## Spec`, and `## Test Quality` headings, verbatim or lightly cleaned. Do **not** merge or rerank findings, because the three axes are deliberately separate (see _Why multiple axes_).
-
-End with a one-line summary: total findings per axis, and the worst issue _within each axis_ (if any). Don't pick a single winner across axes: that's the reranking the separation exists to prevent.
+Then one line listing skipped axes with their reasons, and a one-line summary: total findings per axis, and the worst issue _within each axis_ (if any). Name no single winner across axes: that's the reranking the separation exists to prevent.
 
 ## Why multiple axes
 
-A change can pass one axis and fail others:
+A change can pass some axes and fail others:
 
-- Code that follows every standard but implements the wrong thing → **Standards pass, Spec fail.**
-- Code that does exactly what the issue asked but breaks the project's conventions → **Spec pass, Standards fail.**
-- Code passes specs and standards axes, but tests are mislabeled, vacuous, or missing - **Test quality fail**
+- Follows every standard but implements the wrong thing → **Standards pass, Spec fail.**
+- Does exactly what the issue asked but crashes on empty input → **Spec pass, Correctness fail.**
+- Correct and well tested, but 1,200 lines mixing a rename with a new feature → **Scope fail.**
+- Correct, but only testable by mocking three owned modules → **Testability fail.**
+- Passes everything else, but the tests are mislabeled, vacuous, or missing → **Test Quality fail.**
 
-Reporting them separately stops one axis from masking the other.
+Reporting them separately stops one axis from masking another.
