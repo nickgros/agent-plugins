@@ -3,6 +3,7 @@ from __future__ import annotations
 import urllib.error
 
 from asbxlib import baseimage
+from fake_incus import FakeIncus
 
 
 def test_resolve_node_download_uses_stubbed_index_and_shasums():
@@ -45,3 +46,36 @@ def test_resolve_node_download_falls_back_when_tarball_sha_is_absent():
     )
     assert baseimage.NODE_PINNED_VERSION in url
     assert sha256 == baseimage.NODE_PINNED_SHA256
+
+
+def test_render_base_cloud_init_installs_omp_for_guest_user_and_puts_it_on_path():
+    rendered = baseimage.render_base_cloud_init("dev", "https://example.invalid/node.tar.xz", "abc")
+    assert "runuser -u dev -- env HOME=/home/dev sh -c" in rendered
+    assert "can1357/oh-my-pi/main/scripts/install.sh" in rendered
+    path_line = next(line for line in rendered.splitlines() if "/etc/environment" in line)
+    assert "PATH=\"/home/dev/.local/bin:" in path_line
+
+
+def test_copy_host_binaries_pushes_into_guest_local_bin_owned_by_guest(tmp_path):
+    tool = tmp_path / "tool"
+    tool.write_text("#!/bin/sh\n")
+    fake = FakeIncus()
+
+    baseimage.copy_host_binaries(fake, "vm", "dev", [str(tool), str(tmp_path / "missing")])
+
+    pushes = [c for c in fake.calls if c[:2] == ["file", "push"]]
+    assert pushes == [[
+        "file", "push", str(tool), "vm/home/dev/.local/bin/tool",
+        "--mode", "0755", "--uid", "1000", "--gid", "1000",
+    ]]
+    mkdirs = [c for c in fake.calls if c[0] == "exec" and "mkdir -p /home/dev/.local/bin" in " ".join(c)]
+    assert len(mkdirs) == 1
+    assert "runuser" in " ".join(mkdirs[0])
+
+
+def test_copy_host_binaries_does_nothing_when_no_binary_exists(tmp_path):
+    fake = FakeIncus()
+
+    baseimage.copy_host_binaries(fake, "vm", "dev", [str(tmp_path / "missing")])
+
+    assert fake.calls == []

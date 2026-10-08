@@ -69,7 +69,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "mounts": [
             {"host": "~/.agents/skills", "guest": "/home/agent/.agents/skills", "mode": "ro"},
         ],
-        "copy_binaries": ["~/.local/bin/omp"],
+        "copy_binaries": [],
         "env": {},
         "git": {"name": "", "email": ""},
         "remotes": {},

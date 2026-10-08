@@ -31,7 +31,7 @@ does not reach an existing `config.yaml`. Add the new entries yourself.
 | `defaults.resources`        | `cpu: 4`, `memory: 8GiB`, `disk: 30GiB`     | Per-sandbox limits, overridable per manifest. `disk` also sizes the base image build.                       |
 | `defaults.auth`             | `[github-gh, aws-creds]`                    | Auth providers. A manifest's `auth` replaces this list.                                                     |
 | `defaults.mounts`           | `~/.agents/skills` read-only                | Mounts for every sandbox. A manifest entry with the same `guest` path replaces one.                         |
-| `defaults.copy_binaries`    | `[~/.local/bin/omp]`                        | Host binaries `build-base` copies into the image. Missing ones are skipped with a warning.                  |
+| `defaults.copy_binaries`    | `[]`                                        | Host binaries `build-base` copies into the guest user's `~/.local/bin`. Missing ones are skipped with a warning. omp is installed in the image, not copied. |
 | `defaults.env`              | `{}`                                        | Guest environment for every sandbox                                                                         |
 | `defaults.git.name`/`email` | empty                                       | Guest git identity. Empty means the host's `git config user.name`/`user.email`.                             |
 | `defaults.remotes`          | `{}`                                        | Extra git remotes for every repo ([manifest](manifest.md))                                                  |

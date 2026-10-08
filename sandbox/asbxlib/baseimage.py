@@ -123,6 +123,10 @@ runcmd:
   # 6. opencode (must not run as root)
   - runuser -u {guest_user} -- bash -c 'curl -fsSL https://opencode.ai/install | bash'
   - ln -sf /home/{guest_user}/.opencode/bin/opencode /usr/local/bin/opencode
+  # 6b. omp: installed as the guest user into ~/.local/bin, so `omp update` can replace it
+  - runuser -u {guest_user} -- env HOME=/home/{guest_user} sh -c 'curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.sh | sh -s -- --binary'
+  # Non-login shells (ssh <host> cmd, sshd via pam_env) need ~/.local/bin on PATH too
+  - echo 'PATH="/home/{guest_user}/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/games"' >> /etc/environment
   # 7. fd-find is installed as fdfind on Debian
   - ln -sf /usr/bin/fdfind /usr/local/bin/fd
   # 8. workspace + skill symlinks
@@ -139,12 +143,34 @@ runcmd:
 BASE_BUILD_INSTANCE = "asbx-base-build"
 
 
+def copy_host_binaries(incus: Incus, instance: str, guest_user: str, binaries: list[str]) -> None:
+    """Copy host binaries into the guest user's ~/.local/bin, owned by that user."""
+    present = []
+    for local_bin in binaries:
+        local_path = config.expand(local_bin)
+        if local_path.exists():
+            present.append(local_path)
+        else:
+            ui.warn(f"copy_binaries: {local_path} not found on host, skipping")
+    if not present:
+        return
+
+    bin_dir = f"/home/{guest_user}/.local/bin"
+    uid = incus.uid_of(instance, guest_user)
+    incus.exec_in(instance, ["mkdir", "-p", bin_dir], user=guest_user)
+    for local_path in present:
+        ui.ok(f"copying {local_path} -> {bin_dir}/{local_path.name}")
+        incus.file_push(instance, str(local_path), f"{bin_dir}/{local_path.name}",
+                        mode="0755", uid=uid, gid=uid)
+
+
 def cmd_build_base(incus: Incus, cfg: dict) -> None:
+    guest_user = cfg["guest_user"]
     if incus.instance_exists(BASE_BUILD_INSTANCE):
         raise AsbxError(f"instance {BASE_BUILD_INSTANCE} already exists; delete it first: incus delete --force {BASE_BUILD_INSTANCE}")
 
     node_url, node_sha256 = resolve_node_download()
-    cloud_init = render_base_cloud_init(cfg["guest_user"], node_url, node_sha256)
+    cloud_init = render_base_cloud_init(guest_user, node_url, node_sha256)
 
     ui.ok(f"launching {BASE_BUILD_INSTANCE} from {cfg['base_image_source']}")
     resources = cfg["defaults"]["resources"]
@@ -160,19 +186,12 @@ def cmd_build_base(incus: Incus, cfg: dict) -> None:
     guest.wait_for_agent(incus, BASE_BUILD_INSTANCE, attempts=150, interval=2.0)
     guest.wait_for_cloud_init(incus, BASE_BUILD_INSTANCE)
 
-    for local_bin in cfg["defaults"]["copy_binaries"]:
-        local_path = config.expand(local_bin)
-        if not local_path.exists():
-            ui.warn(f"copy_binaries: {local_path} not found on host, skipping")
-            continue
-        name = local_path.name
-        ui.ok(f"copying {local_path} -> /usr/local/bin/{name}")
-        incus.file_push(BASE_BUILD_INSTANCE, str(local_path), f"/usr/local/bin/{name}", mode="0755")
+    copy_host_binaries(incus, BASE_BUILD_INSTANCE, guest_user, cfg["defaults"]["copy_binaries"])
 
     ui.ok("cleaning instance for imaging")
     incus.exec_in(BASE_BUILD_INSTANCE, ["cloud-init", "clean", "--logs", "--machine-id"], user="root")
     incus.exec_in(BASE_BUILD_INSTANCE, ["bash", "-c", "rm -f /etc/ssh/ssh_host_*"], user="root")
-    incus.exec_in(BASE_BUILD_INSTANCE, ["truncate", "-s0", f"/home/{cfg['guest_user']}/.bash_history"], user="root", check=False)
+    incus.exec_in(BASE_BUILD_INSTANCE, ["truncate", "-s0", f"/home/{guest_user}/.bash_history"], user="root", check=False)
     incus.exec_in(BASE_BUILD_INSTANCE, ["apt-get", "clean"], user="root")
 
     ui.ok(f"stopping and publishing {BASE_BUILD_INSTANCE}")
