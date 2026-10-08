@@ -83,17 +83,38 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
+# User-keyed maps: any key is valid under these, not just the default ones.
+OPEN_MAPS = frozenset({"defaults.env", "defaults.remotes", "harness_env"})
+
+
 def deep_merge(base: dict, override: dict, path: str = "") -> dict:
     result = dict(base)
     for k, v in override.items():
         key_path = f"{path}.{k}" if path else k
         if k not in base:
             raise AsbxError(f"config {config_path()}: unknown key '{key_path}'")
-        if isinstance(v, dict) and isinstance(base[k], dict):
+        if key_path in OPEN_MAPS and isinstance(v, dict):
+            result[k] = {**base[k], **v}
+        elif isinstance(v, dict) and isinstance(base[k], dict):
             result[k] = deep_merge(base[k], v, key_path)
         else:
             result[k] = v
     return result
+
+
+def normalize_env(env: dict, where: str) -> dict[str, str]:
+    """Env values reach shell command lines, so they must be strings. YAML
+    parses `PORT: 8080` as an int and `DEBUG: true` as a bool; render those the
+    way a shell user would write them."""
+    out: dict[str, str] = {}
+    for k, v in env.items():
+        if isinstance(v, bool):
+            out[str(k)] = "true" if v else "false"
+        elif isinstance(v, (str, int, float)):
+            out[str(k)] = str(v)
+        else:
+            raise AsbxError(f"{where}.{k}: env values must be scalars, got {type(v).__name__}")
+    return out
 
 
 def load_config() -> dict[str, Any]:
@@ -102,6 +123,8 @@ def load_config() -> dict[str, Any]:
     with open(config_path()) as f:
         raw = yaml.safe_load(f) or {}
     cfg = deep_merge(DEFAULT_CONFIG, raw)
+    cfg["defaults"]["env"] = normalize_env(cfg["defaults"]["env"], "defaults.env")
+    cfg["harness_env"] = normalize_env(cfg["harness_env"], "harness_env")
     return cfg
 
 

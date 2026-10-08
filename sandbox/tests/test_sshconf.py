@@ -86,3 +86,50 @@ def test_cmd_ssh_config_uses_the_manifest_instance_name(cfg, config_root, capsys
     assert "Host sandbox-custom\n" in out
     assert "HostName sandbox-custom.incus" in out
     assert "ProxyJump me@workstation" in out
+
+
+# ---------------------------------------------------------------------------
+# ensure_ssh_include / include_is_first
+# ---------------------------------------------------------------------------
+
+def test_include_line_follows_the_configured_config_dir(cfg):
+    cfg["ssh"]["config_dir"] = "~/.ssh/sandboxes"
+    assert sshconf.include_line(cfg) == "Include ~/.ssh/sandboxes/*.conf"
+
+
+def test_ensure_ssh_include_creates_the_file_with_the_line(cfg, tmp_path):
+    path = tmp_path / "config"
+    sshconf.ensure_ssh_include(cfg, path)
+    assert path.read_text() == sshconf.include_line(cfg) + "\n"
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_ensure_ssh_include_moves_a_lower_line_to_the_top(cfg, tmp_path):
+    line = sshconf.include_line(cfg)
+    path = tmp_path / "config"
+    path.write_text(f"Host a\n    User x\n\n{line}\n\nHost b\n")
+
+    sshconf.ensure_ssh_include(cfg, path)
+
+    text = path.read_text()
+    assert text.splitlines()[0] == line
+    assert text.count(line) == 1
+    assert "Host a\n    User x" in text and "Host b" in text
+
+
+def test_ensure_ssh_include_leaves_a_correct_file_untouched(cfg, tmp_path):
+    line = sshconf.include_line(cfg)
+    path = tmp_path / "config"
+    original = f"# mine\n{line}\nHost a\n"
+    path.write_text(original)
+
+    sshconf.ensure_ssh_include(cfg, path)
+
+    assert path.read_text() == original
+
+
+def test_include_is_first_ignores_comments_and_blank_lines_but_not_hosts(cfg):
+    line = sshconf.include_line(cfg)
+    assert sshconf.include_is_first(f"\n# c\n{line}\nHost a\n", line)
+    assert not sshconf.include_is_first(f"Host a\n{line}\n", line)
+    assert not sshconf.include_is_first("", line)

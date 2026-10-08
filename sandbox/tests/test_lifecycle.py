@@ -87,6 +87,7 @@ def test_cmd_rebuild_refuses_when_workspace_repo_is_dirty_and_force_is_false(mon
     fake = FakeIncus()
     fake.set_instance(exists=True)
     fake.stub("ls", "-1", stdout="myrepo\n")
+    fake.stub("find", "/workspace", stdout="/workspace/myrepo\n")
     fake.stub("git", "-C", "status", "--porcelain", stdout=" M dirty.py\n")
     # Registered before the "remote" stub: "--remotes" (part of the unpushed-log
     # command) contains "remote" as a substring, so without this ordering the
@@ -129,3 +130,51 @@ def test_cmd_restore_from_snapshot_restarts_the_instance_and_rewrites_its_ssh_co
 
     assert ["start", "sandbox-demo"] in fake.calls
     assert "HostName sandbox-demo.incus" in (tmp_path / "confs" / "sandbox-demo.conf").read_text()
+
+
+def test_cmd_snapshot_refuses_a_label_that_already_exists(monkeypatch, cfg, config_root):
+    (config_root / "demo.yaml").write_text("")
+    fake = FakeIncus()
+    fake.set_snapshots(["pre1"])
+
+    with pytest.raises(AsbxError, match="already exists"):
+        lifecycle.cmd_snapshot(fake, cfg, "demo", "pre1")
+
+    assert not any(c[:2] == ["snapshot", "create"] or c[:1] == ["copy"] for c in fake.calls)
+
+
+def _clean_pushed_fake(ls: str, found: str) -> FakeIncus:
+    fake = FakeIncus()
+    fake.set_instance(exists=True)
+    fake.stub("ls", "-1", stdout=ls)
+    fake.stub("find", "/workspace", stdout=found)
+    fake.stub("git", "-C", "log", stdout="")
+    fake.stub("git", "-C", "remote", stdout=REMOTE + "\n")
+    return fake
+
+
+def test_find_unsafe_repos_checks_worktrees_inside_a_worktrees_directory():
+    fake = _clean_pushed_fake("r.worktrees\n", "/workspace/r.worktrees/feat\n/workspace/r.worktrees/fix\n")
+    fake.stub("git", "-C", "/workspace/r.worktrees/fix", "status", "--porcelain", stdout=" M x\n")
+
+    assert lifecycle.find_unsafe_repos(fake, "sandbox-demo", "demo", "agent") == [
+        "r.worktrees/fix: dirty (uncommitted changes)"]
+
+
+def test_find_unsafe_repos_flags_a_directory_that_is_not_a_repo():
+    fake = _clean_pushed_fake("scratch\nmyrepo\n", "/workspace/myrepo\n")
+
+    assert lifecycle.find_unsafe_repos(fake, "sandbox-demo", "demo", "agent") == [
+        "scratch: not a git repository — contents cannot be recovered"]
+
+
+def test_cmd_rebuild_refuses_when_workspace_cannot_be_listed(monkeypatch, cfg):
+    monkeypatch.setattr(lifecycle.manifest_mod, "load_manifest", lambda group, cfg: _fake_manifest())
+    fake = FakeIncus()
+    fake.set_instance(exists=True)
+    fake.stub("ls", "-1", rc=2)
+
+    with pytest.raises(AsbxError, match="cannot list /workspace"):
+        lifecycle.cmd_rebuild(fake, cfg, "demo", force=False, yes=True)
+
+    assert not any("delete" in " ".join(c) for c in fake.calls)

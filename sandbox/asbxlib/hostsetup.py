@@ -41,7 +41,7 @@ def cmd_init(incus: Incus) -> None:
     except AsbxError as e:
         ui.warn(f"could not create network ACL yet: {e}")
 
-    sshconf.ensure_ssh_include()
+    sshconf.ensure_ssh_include(cfg)
 
     config.expand(cfg["ssh"]["config_dir"]).mkdir(parents=True, exist_ok=True)
     ui.ok("asbx init complete")

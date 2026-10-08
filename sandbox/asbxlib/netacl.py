@@ -119,7 +119,9 @@ def compute_acl_rules_for_network(incus: Incus, cfg: dict) -> dict:
     ipv4 = incus.network_get(net_cfg["name"], "ipv4.address")
     if not ipv4:
         raise AsbxError(f"network {net_cfg['name']} has no ipv4.address configured")
-    ipv6 = incus.network_get(net_cfg["name"], "ipv6.address")
+    ipv6 = (incus.network_get(net_cfg["name"], "ipv6.address") or "").strip()
+    if ipv6 == "none":      # Incus's value for "no IPv6 on this bridge"
+        ipv6 = ""
     return compute_acl_rules(ipv4, net_cfg["block_cidrs"], bridge_cidr6=ipv6 or None)
 
 

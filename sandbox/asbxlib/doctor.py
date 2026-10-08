@@ -78,15 +78,13 @@ def cmd_doctor(incus: Incus, cfg: Optional[dict], fix: bool) -> int:
     ssh_pub = Path(str(ssh_key) + ".pub")
     check("ssh key exists", ssh_key.exists() and ssh_pub.exists(), f"missing {ssh_key} or {ssh_pub}")
 
-    ssh_config = Path.home() / ".ssh" / "config"
-    include_present = False
-    if ssh_config.exists():
-        first_lines = ssh_config.read_text().splitlines()[:5]
-        include_present = any("agent-sandbox.d" in l for l in first_lines)
+    ssh_config = sshconf.user_ssh_config()
+    include_present = ssh_config.exists() and sshconf.include_is_first(
+        ssh_config.read_text(), sshconf.include_line(cfg))
     if not include_present and fix:
-        sshconf.ensure_ssh_include()
+        sshconf.ensure_ssh_include(cfg)
         include_present = True
-    check("Include line in ~/.ssh/config", include_present, "missing or not near top")
+    check("Include line in ~/.ssh/config", include_present, "missing or not the first directive")
 
     if incus_on_path and server_ok:
         fingerprint = incus.image_alias_exists(cfg["image_alias"])

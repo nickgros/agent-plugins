@@ -79,19 +79,37 @@ def write_ssh_config(instance: str, cfg: dict) -> str:
     return hostname
 
 
-def ensure_ssh_include() -> None:
-    """Prepends the asbx Include line to ~/.ssh/config. It has to be the first
-    line: OpenSSH takes the first matching value for each option, so a later
-    Include would lose to any earlier Host block."""
-    ssh_config = Path.home() / ".ssh" / "config"
-    include_line = "Include ~/.ssh/agent-sandbox.d/*.conf"
-    if ssh_config.exists():
-        content = ssh_config.read_text()
-        if include_line in content.splitlines():
-            return
-        ssh_config.write_text(include_line + "\n\n" + content)
-        ui.ok(f"prepended Include line to {ssh_config}")
+def include_line(cfg: dict) -> str:
+    return f"Include {cfg['ssh']['config_dir']}/*.conf"
+
+
+def user_ssh_config() -> Path:
+    return Path.home() / ".ssh" / "config"
+
+
+def include_is_first(text: str, line: str) -> bool:
+    """True when `line` is the first directive. OpenSSH takes the first value it
+    finds for each option, so a lower Include loses to any earlier Host block."""
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if stripped and not stripped.startswith("#"):
+            return stripped == line
+    return False
+
+
+def ensure_ssh_include(cfg: dict, ssh_config: Path | None = None) -> None:
+    """Puts the asbx Include line first in ~/.ssh/config, moving it up if it
+    exists lower down."""
+    ssh_config = ssh_config or user_ssh_config()
+    line = include_line(cfg)
+    if not ssh_config.exists():
+        ssh_config.parent.mkdir(parents=True, exist_ok=True)
+        host.write_private_text(ssh_config, line + "\n")
+        ui.ok(f"created {ssh_config}")
         return
-    ssh_config.parent.mkdir(parents=True, exist_ok=True)
-    host.write_private_text(ssh_config, include_line + "\n")
-    ui.ok(f"created {ssh_config}")
+    content = ssh_config.read_text()
+    if include_is_first(content, line):
+        return
+    rest = "\n".join(l for l in content.splitlines() if l.strip() != line)
+    ssh_config.write_text(line + "\n\n" + rest.lstrip("\n") + ("\n" if rest else ""))
+    ui.ok(f"put the Include line first in {ssh_config}")

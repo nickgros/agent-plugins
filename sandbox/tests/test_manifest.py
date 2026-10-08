@@ -210,3 +210,27 @@ def test_load_manifest_top_level_remote_overrides_repo_remote(config_root, cfg):
 def test_load_manifest_missing_manifest_raises(config_root, cfg):
     with pytest.raises(AsbxError, match="no manifest at"):
         manifest.load_manifest("nope", cfg)
+
+
+def test_manifest_groups_use_the_manifest_name_for_the_instance(config_root, cfg):
+    (config_root / "a.yaml").write_text("name: custom\n")
+    (config_root / "b.yaml").write_text("")
+
+    assert manifest.manifest_groups(cfg) == [("a", "sandbox-custom"), ("b", "sandbox-b")]
+
+
+def test_load_manifest_env_values_become_strings(config_root, cfg):
+    (config_root / "demo.yaml").write_text("env:\n  PORT: 8080\n  DEBUG: true\n")
+
+    assert manifest.load_manifest("demo", cfg).env == {"PORT": "8080", "DEBUG": "true"}
+
+
+@pytest.mark.parametrize("body, path", [
+    ("repos:\n  - url: https://github.com/x/y.git\n    bogus: 1\n", "repos.bogus"),
+    ("mounts:\n  - host: /a\n    guest: /b\n    bogus: 1\n", "mounts.bogus"),
+])
+def test_manifest_unknown_key_inside_list_entries_is_named(tmp_path, body, path):
+    f = tmp_path / "m.yaml"
+    f.write_text(body)
+    with pytest.raises(AsbxError, match=f"unknown key '{path}'"):
+        manifest.validate_manifest_dict(__import__("yaml").safe_load(body), str(f))

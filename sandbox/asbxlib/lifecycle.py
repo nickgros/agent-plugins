@@ -108,6 +108,9 @@ def cmd_snapshot(incus: Incus, cfg: dict, group: str, label: Optional[str]) -> N
     if incus.storage_driver("default") == "dir":
         print("notice: dir storage pool; snapshot copies the full root disk", file=sys.stderr)
 
+    if label in incus.snapshot_list(instance):
+        raise AsbxError(f"snapshot {instance}/{label} already exists; pick another label")
+
     proc = incus.snapshot_create(instance, label)
     if proc.returncode == 0:
         ui.ok(f"snapshot {instance}/{label} created")
@@ -162,37 +165,51 @@ def cmd_restore(incus: Incus, cfg: dict, group: str, label: str, yes: bool) -> N
     ui.ok(f"{instance} restored to {label}")
 
 
+def find_unsafe_repos(incus: Incus, instance: str, group: str, guest_user: str) -> list[str]:
+    """Everything under /workspace whose loss a rebuild would cause. Repos are
+    found wherever .git appears within three levels, so a `<repo>.worktrees/`
+    directory is checked through the worktrees inside it, not as one repo."""
+    # An unreadable /workspace must never be mistaken for "no repos to lose":
+    # that would let rebuild destroy unpushed work unwarned.
+    listing = incus.exec_in(instance, ["bash", "-c", "ls -1 /workspace"],
+                            user=guest_user, check=False)
+    if listing.returncode != 0:
+        state = incus.instance_state(instance)
+        raise AsbxError(
+            f"{instance}: cannot list /workspace (state={state}); "
+            f"start it first ('asbx start {group}') so rebuild can check for unsaved work"
+        )
+    top_dirs = [d for d in listing.stdout.splitlines() if d.strip()]
+    found = incus.exec_in(instance, ["find", "/workspace", "-maxdepth", "3", "-name", ".git",
+                                      "-printf", "%h\\n"], user=guest_user, check=False)
+    repo_roots = sorted({r for r in (found.stdout or "").splitlines() if r.startswith("/workspace/")})
+
+    blocking = []
+    for top in top_dirs:
+        prefix = f"/workspace/{top}"
+        if not any(r == prefix or r.startswith(prefix + "/") for r in repo_roots):
+            blocking.append(f"{top}: not a git repository — contents cannot be recovered")
+    for root in repo_roots:
+        name = root[len("/workspace/"):]
+        status = incus.exec_in(instance, ["git", "-C", root, "status", "--porcelain"],
+                               user=guest_user, check=False)
+        remote = incus.exec_in(instance, ["git", "-C", root, "remote"],
+                               user=guest_user, check=False)
+        unpushed = incus.exec_in(instance, ["git", "-C", root, "log", "--branches", "--not",
+                                             "--remotes", "--oneline"],
+                                 user=guest_user, check=False)
+        msg = classify_repo(name, status.stdout, remote.stdout, unpushed.stdout)
+        if msg:
+            blocking.append(msg)
+    return blocking
+
+
 def cmd_rebuild(incus: Incus, cfg: dict, group: str, force: bool, yes: bool) -> None:
     manifest = manifest_mod.load_manifest(group, cfg)
     instance = manifest.instance
 
     if incus.instance_exists(instance):
-        # An unreadable /workspace must never be mistaken for "no repos to
-        # lose": that would let rebuild destroy unpushed work unwarned.
-        proc = incus.exec_in(instance, ["bash", "-c", "ls -1 /workspace"],
-                             user=cfg["guest_user"], check=False)
-        if proc.returncode != 0:
-            state = incus.instance_state(instance)
-            raise AsbxError(
-                f"{instance}: cannot list /workspace (state={state}); "
-                f"start it first ('asbx start {group}') so rebuild can check for unsaved work"
-            )
-        dirs = [d for d in proc.stdout.splitlines() if d.strip()]
-
-        blocking = []
-        for d in dirs:
-            workdir = f"/workspace/{d}"
-            status = incus.exec_in(instance, ["git", "-C", workdir, "status", "--porcelain"],
-                                   user=cfg["guest_user"], check=False)
-            remote = incus.exec_in(instance, ["git", "-C", workdir, "remote"],
-                                   user=cfg["guest_user"], check=False)
-            unpushed = incus.exec_in(instance, ["git", "-C", workdir, "log", "--branches", "--not",
-                                                 "--remotes", "--oneline"],
-                                     user=cfg["guest_user"], check=False)
-            msg = classify_repo(d, status.stdout, remote.stdout, unpushed.stdout)
-            if msg:
-                blocking.append(msg)
-
+        blocking = find_unsafe_repos(incus, instance, group, cfg["guest_user"])
         if blocking and not force:
             raise AsbxError("rebuild refused, unsafe repos:\n  " + "\n  ".join(blocking))
 

@@ -26,6 +26,12 @@ built under the removed in-guest nftables fallback
 (`egress_mode=guest-nft`) is refused by `up` and has to be rebuilt.
 Rationale: [ADR 0003](adr/0003-per-nic-egress-acl-fail-closed.md).
 
+Known gap: IPv6 blocking covers only ULA and link-local. If your LAN hands
+out global IPv6 prefixes, a sandbox with IPv6 can reach LAN hosts on them.
+Add your LAN's global prefix to `network.block_cidrs`, or set
+`ipv6.address=none` on the bridge. Blocking all of `2000::/3` would also cut
+off IPv6 internet access.
+
 The ACL's rules are computed from the current bridge address and
 `block_cidrs`. `asbx doctor` reports drift; `asbx doctor --fix` rewrites the
 ACL.

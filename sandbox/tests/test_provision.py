@@ -39,6 +39,11 @@ def test_repo_already_cloned_is_not_reclonced_but_remotes_still_reconciled(tmp_p
 
     provision.run_provision(fake, "sandbox-demo", _manifest(tmp_path, repos=[repo]), "agent")
 
+    joined = [" ".join(c) for c in fake.calls]
+    assert not any("git clone" in c for c in joined)
+    assert not any("should-not-run" in c for c in joined)
+    assert any("remote add upstream" in c and "someorg" in c for c in joined)
+
 
 def test_clone_failure_with_authentication_in_stderr_raises_asbxerror_pointing_at_auth_command():
     repo = Repo(url="https://github.com/x/y.git", dir="y", ref=None, setup=None, remotes={})

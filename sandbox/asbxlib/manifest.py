@@ -212,7 +212,7 @@ def load_manifest(group: str, cfg: dict) -> Manifest:
     manifest_mounts = [Mount.from_dict(m) for m in (data.get("mounts") or [])]
     mounts = merge_mounts(default_mounts, manifest_mounts)
     auth = data.get("auth", cfg["defaults"]["auth"])
-    env = dict(data.get("env") or {})
+    env = config.normalize_env(data.get("env") or {}, "env")
 
     # Top-level `remotes` wins over a repo's own entry of the same name: the
     # group-wide setting is the one the operator states last.
@@ -266,5 +266,14 @@ def manifest_groups(cfg: dict) -> list[tuple[str, str]]:
     projects_dir = config.projects_dir()
     if not projects_dir.exists():
         return []
-    return [(p.stem, f"{cfg['instance_prefix']}{p.stem}")
-            for p in sorted(projects_dir.glob("*.yaml"))]
+    groups = []
+    for p in sorted(projects_dir.glob("*.yaml")):
+        # Same rule as load_manifest, but tolerant: an unreadable manifest must
+        # not take `list` and `doctor` down; it keeps its filename-derived name.
+        try:
+            data = yaml.safe_load(p.read_text())
+        except (OSError, yaml.YAMLError):
+            data = None
+        name = data.get("name") if isinstance(data, dict) else None
+        groups.append((p.stem, f"{cfg['instance_prefix']}{name or p.stem}"))
+    return groups

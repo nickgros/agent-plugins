@@ -219,3 +219,14 @@ def test_parse_incus_version_reads_server_version_from_incus_info():
 ])
 def test_bridged_nic_acl_supported_boundaries(version, supported):
     assert netacl.bridged_nic_acl_supported(version) is supported
+
+
+@pytest.mark.parametrize("raw", ["none", "", "  "])
+def test_compute_acl_rules_for_network_treats_ipv6_none_as_absent(raw, cfg):
+    fake = FakeIncus()
+    fake.stub("network", "get", "ipv4.address", stdout="10.0.0.1/24\n")
+    fake.stub("network", "get", "ipv6.address", stdout=f"{raw}\n")
+
+    rules = netacl.compute_acl_rules_for_network(fake, cfg)
+
+    assert rules == netacl.compute_acl_rules("10.0.0.1/24", cfg["network"]["block_cidrs"])
