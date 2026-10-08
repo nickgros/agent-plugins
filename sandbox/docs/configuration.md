@@ -37,6 +37,8 @@ does not reach an existing `config.yaml`. Add the new entries yourself.
 | `defaults.remotes`          | `{}`                                        | Extra git remotes for every repo ([manifest](manifest.md))                                                  |
 | `aws.profiles`              | `[sage-bedrock]`                            | Host AWS profiles whose short-lived credentials `aws-creds` pushes into sandboxes. A manifest's `aws_profiles` adds to it. |
 | `harness_env`               | Bedrock settings for Claude Code            | Guest environment for the harness CLIs. Also written to `~/.claude/settings.json`.                          |
+| `harness_settings.sync`     | `[omp]`                                     | Host harness files pushed into every sandbox on `up` and `asbx settings-sync`. Built-in item names or `{host, guest}` entries; credential items are rejected here. |
+| `harness_settings.credentials` | `[]`                                     | Opt-in credential items (`omp-mcp`, `omp-env`, `omp-secrets`) or `{host, guest}` entries, pushed as mode 0600. A manifest's `harness_credentials` adds to it. |
 
 Guest environment precedence, lowest to highest: `harness_env`,
 `defaults.env`, then the manifest's `env`. The result is written to

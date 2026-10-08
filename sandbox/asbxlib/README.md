@@ -5,26 +5,27 @@ for PyYAML, then calls `cli.main`. This is the stdlib plus PyYAML only.
 
 ## Modules
 
-| Module         | Owns                                                                                                         |
-| -------------- | ------------------------------------------------------------------------------------------------------------ |
-| `cli.py`       | argparse wiring; maps `AsbxError` to `error: ...` and exit 1                                                 |
-| `config.py`    | `config.yaml` defaults, strict merge, `ASBX_CONFIG_DIR`                                                      |
-| `manifest.py`  | Manifest validation and merging over config defaults; `Manifest`, `Repo`, `Mount`                           |
-| `incus.py`     | `Incus`: the only place that spawns `incus`. Non-root `exec_in` goes through `runuser` for a full session.  |
-| `hostsetup.py` | `init`, `install`                                                                                            |
-| `baseimage.py` | `build-base`: cloud-init rendering, Node download pinning, publish and alias                                |
-| `up.py`        | `up` orchestration                                                                                           |
-| `guest.py`     | In-guest setup: cloud-init, waits, mounts and their readability rule, `authorized_keys`, env, git identity  |
-| `netacl.py`    | Egress ACL rules, attach to NIC (fail closed), Incus version gate                                            |
-| `sshconf.py`   | Generated per-instance SSH config and the `~/.ssh/config` Include line                                       |
-| `auth.py`      | Auth providers (`github-gh`, `aws-creds`, inline `{command, check}`)                                         |
-| `awscreds.py`  | Export host AWS credentials, push them into guests, `aws-refresh`, systemd user timer                        |
-| `provision.py` | Clone, remotes, compose, setup hook                                                                          |
-| `lifecycle.py` | `list`, `ssh`, `shell`, start/stop/restart, snapshot/restore, `rebuild` (repo safety), `rm`                  |
-| `doctor.py`    | `doctor` checks and `--fix`                                                                                  |
-| `netcheck.py`  | Black-box guest network probes used by `doctor`                                                              |
-| `host.py`      | Host-side helpers: key generation, known-hosts, DNS lookup, private file writes                             |
-| `ui.py`        | `ok`/`warn`/confirm prompts                                                                                  |
+| Module           | Owns                                                                                                       |
+|------------------|------------------------------------------------------------------------------------------------------------|
+| `cli.py`         | argparse wiring; maps `AsbxError` to `error: ...` and exit 1                                               |
+| `config.py`      | `config.yaml` defaults, strict merge, `ASBX_CONFIG_DIR`, harness item catalog and validation               |
+| `manifest.py`    | Manifest validation and merging over config defaults; `Manifest`, `Repo`, `Mount`                          |
+| `incus.py`       | `Incus`: the only place that spawns `incus`. Non-root `exec_in` goes through `runuser` for a full session. |
+| `hostsetup.py`   | `init`, `install`                                                                                          |
+| `baseimage.py`   | `build-base`: cloud-init rendering, Node download pinning, publish and alias                               |
+| `up.py`          | `up` orchestration                                                                                         |
+| `guest.py`       | In-guest setup: cloud-init, waits, mounts and their readability rule, `authorized_keys`, env, git identity |
+| `netacl.py`      | Egress ACL rules, attach to NIC (fail closed), Incus version gate                                          |
+| `sshconf.py`     | Generated per-instance SSH config and the `~/.ssh/config` Include line                                     |
+| `auth.py`        | Auth providers (`github-gh`, `aws-creds`, inline `{command, check}`)                                       |
+| `awscreds.py`    | Export host AWS credentials, push them into guests, `aws-refresh`, systemd user timer                      |
+| `harnesssync.py` | Push host harness settings (omp config, rules, hooks) into guests; `settings-sync`                         |
+| `provision.py`   | Clone, remotes, compose, setup hook                                                                        |
+| `lifecycle.py`   | `list`, `ssh`, `shell`, start/stop/restart, snapshot/restore, `rebuild` (repo safety), `rm`                |
+| `doctor.py`      | `doctor` checks and `--fix`                                                                                |
+| `netcheck.py`    | Black-box guest network probes used by `doctor`                                                            |
+| `host.py`        | Host-side helpers: key generation, known-hosts, DNS lookup, private file writes                            |
+| `ui.py`          | `ok`/`warn`/confirm prompts                                                                                |
 
 ## Invariants
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import auth, config, guest, manifest, netacl, provision, sshconf, ui
+from . import auth, config, guest, harnesssync, manifest, netacl, provision, sshconf, ui
 from .errors import AsbxError
 from .incus import Incus
 
@@ -81,6 +81,11 @@ def cmd_up(incus: Incus, cfg: dict, group: str, no_auth: bool, no_provision: boo
 
     guest.write_guest_env(incus, instance, cfg, manifest_obj.env)
     guest.write_git_identity(incus, instance, cfg)
+    try:
+        harnesssync.sync_instance(incus, cfg, manifest_obj)
+    except AsbxError as e:
+        # Settings are a convenience; a bad host file must not block auth and provisioning.
+        ui.warn(f"{instance}: harness settings not synced: {e}")
 
     if not no_auth:
         auth.run_auth(incus, manifest_obj, cfg)

@@ -17,7 +17,7 @@ from .errors import AsbxError
 
 MANIFEST_KEYS = {
     "name", "resources", "repos", "mounts", "services", "env", "auth", "setup", "remotes",
-    "aws_profiles",
+    "aws_profiles", "harness_credentials",
 }
 REPO_KEYS = {"url", "dir", "ref", "setup", "remotes"}
 MOUNT_KEYS = {"host", "guest", "mode"}
@@ -60,6 +60,7 @@ class Manifest:
     setup_path: Optional[str] = None
     remotes: dict[str, str] = field(default_factory=dict)
     aws_profiles: list[str] = field(default_factory=list)
+    harness_credentials: list[Any] = field(default_factory=list)
 
 
 def repo_dir(repo: dict) -> str:
@@ -109,6 +110,7 @@ def validate_manifest_dict(data: dict, manifest_path: str) -> dict:
 
     _validate_remotes_dict(data.get("remotes"), manifest_path, "remotes")
     _validate_aws_profiles(data.get("aws_profiles"), manifest_path, "aws_profiles")
+    _validate_harness_credentials(data, manifest_path)
 
     mounts = data.get("mounts") or []
     for mount in mounts:
@@ -175,6 +177,12 @@ def _validate_aws_profiles(value: Any, manifest_path: str, field: str) -> list[s
     return value
 
 
+def _validate_harness_credentials(data: dict, manifest_path: str) -> list:
+    return config.validate_harness_list(
+        data.get("harness_credentials") or [],
+        f"manifest {manifest_path}: harness_credentials", credentials=True)
+
+
 def resolve_remote_url(repo_url: str, spec: str) -> str:
     """Resolves a `remotes` manifest value to a concrete git remote URL.
 
@@ -224,6 +232,12 @@ def load_manifest(group: str, cfg: dict) -> Manifest:
     mounts = merge_mounts(default_mounts, manifest_mounts)
     auth = data.get("auth", cfg["defaults"]["auth"])
     aws_profiles = list(dict.fromkeys([*cfg["aws"]["profiles"], *(data.get("aws_profiles") or [])]))
+    harness_credentials = list({
+        (e if isinstance(e, str) else (e["host"], e["guest"])): e for e in [
+            *cfg["harness_settings"]["credentials"],
+            *_validate_harness_credentials(data, str(path)),
+        ]
+    }.values())
     env = config.normalize_env(data.get("env") or {}, "env")
 
     # Top-level `remotes` wins over a repo's own entry of the same name: the
@@ -262,6 +276,7 @@ def load_manifest(group: str, cfg: dict) -> Manifest:
         setup_path=setup_path,
         remotes=global_remotes,
         aws_profiles=aws_profiles,
+        harness_credentials=harness_credentials,
     )
 
 

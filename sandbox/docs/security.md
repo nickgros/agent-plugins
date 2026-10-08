@@ -67,6 +67,16 @@ The agent can use any credential placed in the guest:
   holds no SSO token, no refresh token and no other profile, and it has no
   channel back to the host. A leaked credential works until it expires
   (about an hour); the host timer replaces it every 10 minutes.
+- Harness settings sync (`harness_settings`, `asbx settings-sync`) is host to
+  guest only. The host is authoritative, so guest edits to synced files are
+  overwritten. Files that carry credentials are left out unless listed under
+  `harness_settings.credentials` or the manifest's `harness_credentials`;
+  runtime state (`agent.db`, `sessions/`, ...) is never synced. A symlink in
+  a synced directory is followed only when its target stays inside that
+  directory; any other is skipped with a warning. The default `omp` item
+  includes `config.yml` and `models.yml` at mode 0644 with no opt-in, so keep
+  literal API keys out of them (use environment variables, or the `omp-env`
+  credential item).
 - Everything in `harness_env` and `env` is exported to every guest shell
   through `/etc/profile.d/asbx-env.sh`.
 

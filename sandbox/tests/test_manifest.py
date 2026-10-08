@@ -267,3 +267,33 @@ def test_load_config_rejects_unsafe_global_profiles(config_root, value):
 
     with pytest.raises(AsbxError, match=r"config .*'aws\.profiles'"):
         config.load_config()
+
+
+def test_load_manifest_harness_credentials_union_config_and_manifest(config_root, cfg):
+    cfg["harness_settings"]["credentials"] = ["omp-env"]
+    (config_root / "demo.yaml").write_text("harness_credentials: [omp-mcp, omp-env]\n")
+
+    assert manifest.load_manifest("demo", cfg).harness_credentials == ["omp-env", "omp-mcp"]
+
+
+def test_manifest_harness_credentials_rejects_non_credential_item(config_root, cfg):
+    (config_root / "demo.yaml").write_text("harness_credentials: [omp]\n")
+
+    with pytest.raises(AsbxError, match="harness_credentials: 'omp' holds no credentials"):
+        manifest.load_manifest("demo", cfg)
+
+
+def test_load_manifest_harness_credentials_default_to_the_config_list(config_root, cfg):
+    (config_root / "demo.yaml").write_text("")
+    assert manifest.load_manifest("demo", cfg).harness_credentials == []
+
+    cfg["harness_settings"]["credentials"] = ["omp-env"]
+    assert manifest.load_manifest("demo", cfg).harness_credentials == ["omp-env"]
+
+
+def test_load_manifest_harness_credentials_dedup_inline_entries(config_root, cfg):
+    entry = {"host": "~/x", "guest": "~/x"}
+    cfg["harness_settings"]["credentials"] = [entry]
+    (config_root / "demo.yaml").write_text("harness_credentials: [{host: ~/x}]\n")
+
+    assert manifest.load_manifest("demo", cfg).harness_credentials == [entry]

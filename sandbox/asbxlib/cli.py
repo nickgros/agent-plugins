@@ -12,6 +12,7 @@ from . import config
 from . import manifest as manifest_mod
 from . import auth
 from . import awscreds
+from . import harnesssync
 from . import provision
 from . import baseimage
 from . import up
@@ -60,6 +61,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("group", nargs="?")
     sp.add_argument("--install-timer", action="store_true",
                     help="install and start the systemd user timer that re-pushes every 10 minutes")
+
+    sp = add("settings-sync",
+             lambda incus, cfg, args: harnesssync.cmd_settings_sync(incus, cfg, args.group),
+             help="push host harness settings into running sandboxes")
+    sp.add_argument("group", nargs="?")
 
     sp = add("provision", _handle_provision, help="run the provision phase for a group")
     sp.add_argument("group")

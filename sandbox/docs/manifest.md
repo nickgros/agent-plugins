@@ -23,6 +23,7 @@ All keys are optional.
 | `env`                | Environment for repo setup, compose and the setup hook. Also written to `/etc/profile.d/asbx-env.sh`.                                  |
 | `auth`               | Auth providers. Replaces `defaults.auth`. See [below](#auth-providers).                                                                |
 | `aws_profiles`       | Extra host AWS profiles for the `aws-creds` provider, added to `aws.profiles` from `config.yaml`. Names match `[A-Za-z0-9._-]+`.       |
+| `harness_credentials` | Credential-carrying harness items (`omp-mcp`, `omp-env`, `omp-secrets`) or `{host, guest}` entries to push, added to `harness_settings.credentials`. |
 | `setup`              | Provision hook. Pushed to `/home/<guest_user>/.asbx/provision.sh` and run from `/workspace` on every provision, so it must be idempotent. |
 
 Rules for specific keys:

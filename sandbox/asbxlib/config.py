@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import posixpath
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +84,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "AWS_REGION": "us-east-1",
         "AWS_PROFILE": "sage-bedrock",
     },
+    "harness_settings": {
+        # Host harness files pushed into every sandbox on `up` and
+        # `settings-sync`. `sync` takes built-in item names (HARNESS_ITEMS) or
+        # {host, guest} entries and must not hold credential items;
+        # `credentials` opts in to those. A manifest's `harness_credentials`
+        # adds to the latter.
+        "sync": ["omp"],
+        "credentials": [],
+    },
 }
 
 
@@ -119,6 +130,82 @@ def normalize_env(env: dict, where: str) -> dict[str, str]:
     return out
 
 
+@dataclass(frozen=True)
+class HarnessItem:
+    root: str  # `~`-relative host dir; the guest uses the same path under its home
+    paths: tuple[str, ...]  # relative to root; files or directories
+    credential: bool
+
+
+# Runtime state and per-install secrets are deliberately absent from every
+# item: agent.db*, history.db*, models.db*, sessions/, blobs/, cache/,
+# secret-placeholder.key, terminal-sessions/, managed-skills/.
+HARNESS_ITEMS: dict[str, HarnessItem] = {
+    "omp": HarnessItem(
+        root="~/.omp/agent",
+        paths=(
+            "config.yml", "config.yaml", "models.yml", "models.yaml",
+            "AGENTS.md", "RULES.md", "SYSTEM.md", "APPEND_SYSTEM.md", "PERSONALITY.md",
+            "SYSTEM_TEMPLATE.md", "TITLE_SYSTEM.md", "WATCHDOG.md",
+            "keybindings.yml", "lsp.json",
+            "rules", "commands", "agents", "hooks", "tools", "extensions", "themes", "skills",
+        ),
+        credential=False,
+    ),
+    "omp-mcp": HarnessItem(root="~/.omp/agent", paths=("mcp.json", ".mcp.json"), credential=True),
+    "omp-env": HarnessItem(root="~/.omp/agent", paths=(".env",), credential=True),
+    "omp-secrets": HarnessItem(root="~/.omp/agent", paths=("secrets.yml",), credential=True),
+}
+
+_HARNESS_LIST_RULE = "must be a list of harness item names or {host, guest} mappings"
+
+
+def validate_harness_list(value: Any, where: str, credentials: bool) -> list:
+    """Validates a `harness_settings.sync` / `credentials` / `harness_credentials`
+    list and returns it normalized: names stay strings, inline entries become
+    {host, guest} dicts with both keys present."""
+    if not isinstance(value, list):
+        raise AsbxError(f"{where}: {_HARNESS_LIST_RULE}")
+    out: list = []
+    for entry in value:
+        if isinstance(entry, str):
+            item = HARNESS_ITEMS.get(entry)
+            if item is None:
+                raise AsbxError(f"{where}: unknown harness item '{entry}'")
+            if item.credential and not credentials:
+                raise AsbxError(
+                    f"{where}: '{entry}' carries credentials; list it under "
+                    "harness_settings.credentials or the manifest's harness_credentials")
+            if not item.credential and credentials:
+                raise AsbxError(f"{where}: '{entry}' holds no credentials; list it under harness_settings.sync")
+            out.append(entry)
+            continue
+        if not isinstance(entry, dict):
+            raise AsbxError(f"{where}: {_HARNESS_LIST_RULE}")
+        for k in entry:
+            if k not in ("host", "guest"):
+                raise AsbxError(f"{where}: unknown key '{k}'")
+        host_path = entry.get("host")
+        if not isinstance(host_path, str) or not host_path:
+            raise AsbxError(f"{where}: 'host' is required and must be a string")
+        if not (host_path.startswith("~/") or host_path.startswith("/")):
+            raise AsbxError(f"{where}: host '{host_path}' must start with ~/ or /")
+        guest_path = entry.get("guest")
+        if guest_path is None:
+            if not host_path.startswith("~/"):
+                raise AsbxError(f"{where}: guest is required when host is not under ~")
+            guest_path = host_path
+        if not isinstance(guest_path, str) or not guest_path.startswith("~/"):
+            raise AsbxError(f"{where}: guest '{guest_path}' must start with ~/")
+        if ".." in guest_path.split("/"):
+            raise AsbxError(f"{where}: guest '{guest_path}' must not contain '..'")
+        rest = posixpath.normpath(guest_path[2:].lstrip("/"))
+        if rest == ".":
+            raise AsbxError(f"{where}: guest '{guest_path}' must name a path under ~, not ~ itself")
+        out.append({"host": host_path, "guest": f"~/{rest}"})
+    return out
+
+
 # An AWS profile name becomes a guest file name and an INI section header.
 AWS_PROFILE_RE = re.compile(r"[A-Za-z0-9._-]+")
 AWS_PROFILES_RULE = "a list of AWS profile names matching [A-Za-z0-9._-]+"
@@ -139,6 +226,10 @@ def load_config() -> dict[str, Any]:
     cfg["harness_env"] = normalize_env(cfg["harness_env"], "harness_env")
     if not is_aws_profile_list(cfg["aws"]["profiles"]):
         raise AsbxError(f"config {config_path()}: 'aws.profiles' must be {AWS_PROFILES_RULE}")
+    harness = cfg["harness_settings"]
+    harness["sync"] = validate_harness_list(harness["sync"], "harness_settings.sync", credentials=False)
+    harness["credentials"] = validate_harness_list(
+        harness["credentials"], "harness_settings.credentials", credentials=True)
     return cfg
 
 
