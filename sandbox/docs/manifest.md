@@ -22,6 +22,7 @@ All keys are optional.
 | `services.compose`   | Compose file pushed into the guest and run with `docker compose -f <path> up -d`.                                                      |
 | `env`                | Environment for repo setup, compose and the setup hook. Also written to `/etc/profile.d/asbx-env.sh`.                                  |
 | `auth`               | Auth providers. Replaces `defaults.auth`. See [below](#auth-providers).                                                                |
+| `aws_profiles`       | Extra host AWS profiles for the `aws-creds` provider, added to `aws.profiles` from `config.yaml`. Names match `[A-Za-z0-9._-]+`.       |
 | `setup`              | Provision hook. Pushed to `/home/<guest_user>/.asbx/provision.sh` and run from `/workspace` on every provision, so it must be idempotent. |
 
 Rules for specific keys:
@@ -71,7 +72,7 @@ satisfied.
 ```yaml
 auth:
   - github-gh
-  - aws-sso
+  - aws-creds
   - { command: "codex login", check: "test -f ~/.codex/auth.json" }
 ```
 
@@ -87,13 +88,24 @@ auth:
     commits made in the guest are signed.
   - It counts as satisfied when `gh auth status` succeeds and lists the
     signing-key scope.
-- **`aws-sso`:**
-  - Copies `aws.config_file` to `~/.aws/config` in the guest (mode `0600`,
-    owned by the guest user).
-  - Runs `aws sso login --use-device-code --profile <aws.profile>`.
-  - It counts as satisfied when `aws sts get-caller-identity` succeeds.
-  - `aws.profile` must name a profile that has an `sso_session` itself
-    ([troubleshooting](troubleshooting.md#aws-sso-login-missing-sso-configuration-values)).
+- **`aws-creds`:**
+  - Pushes host-minted, short-lived credentials into the guest; the guest
+    never gets an SSO token or any profile outside the allowed set. The
+    allowed set is `aws.profiles` from `config.yaml` plus the manifest's
+    `aws_profiles`.
+  - On the host it runs `aws configure export-credentials --profile <p>` per
+    profile. Long-term keys are refused: the output needs a session token and
+    an expiration. If the host's SSO session expired, run `aws sso login`
+    there.
+  - In the guest it deletes `~/.aws`, writes
+    `~/.asbx/aws/<profile>.json` (mode `0600`) and an `~/.aws/config` whose
+    profiles use `credential_process = cat ~/.asbx/aws/<profile>.json`.
+    Credential files for profiles no longer allowed are removed.
+  - It has no "already authenticated" short-circuit: every run re-exports.
+  - Credentials last about an hour. `asbx aws-refresh --install-timer`
+    installs a systemd user timer on the host that re-pushes them every 10
+    minutes (`asbx aws-refresh [group]` does one push by hand). `asbx doctor`
+    reports the timer and each profile's remaining lifetime.
 
 ## Example
 

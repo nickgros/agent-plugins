@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from .errors import AsbxError
 from .incus import Incus
+from . import awscreds
 from . import ui
 from . import host
 from . import config
@@ -31,6 +33,26 @@ def doctor_mounts(cfg: dict) -> list[manifest_mod.Mount]:
         for mount in loaded.mounts:
             by_guest[mount.guest] = mount
     return list(by_guest.values())
+
+
+def aws_credential_results(incus: Incus, manifest: manifest_mod.Manifest, group: str,
+                           guest_user: str, now: datetime) -> list[tuple[str, str]]:
+    """One (status, message) per allowed profile, from the credential file the
+    guest holds for it."""
+    results = []
+    for profile in manifest.aws_profiles:
+        proc = incus.exec_in(
+            manifest.instance, ["cat", awscreds.guest_creds_file(guest_user, profile)],
+            user=guest_user, check=False)
+        if proc.returncode != 0:
+            status, msg = "FAIL", "missing"
+        else:
+            status, msg = awscreds.credential_status(proc.stdout, now)
+        if status != "PASS":
+            msg += (f"; run 'asbx aws-refresh {group}'; "
+                    "if that fails, run 'aws sso login' on the host")
+        results.append((status, f"{manifest.instance}: aws profile {profile}: {msg}"))
+    return results
 
 
 def cmd_doctor(incus: Incus, cfg: Optional[dict], fix: bool) -> int:
@@ -126,6 +148,13 @@ def cmd_doctor(incus: Incus, cfg: Optional[dict], fix: bool) -> int:
         err = guest.mount_readable_error(host_path)
         check(f"mount {mount.host}", err is None, err or "")
 
+    aws_manifests = dict(awscreds.aws_targets(cfg, None))
+    if aws_manifests:
+        check("aws CLI on PATH", host.which("aws"), "needed by the aws-creds provider")
+        check(f"{awscreds.TIMER_UNIT} active",
+              host.systemctl_user("is-active", awscreds.TIMER_UNIT).returncode == 0,
+              "run 'asbx aws-refresh --install-timer'", warn_cond=True)
+
     for group, instance in manifest_mod.manifest_groups(cfg):
         exists = incus_on_path and server_ok and incus.instance_exists(instance)
         state = incus.instance_state(instance) if exists else "absent"
@@ -156,6 +185,10 @@ def cmd_doctor(incus: Incus, cfg: Optional[dict], fix: bool) -> int:
                       "TCP handshake to api.github.com:443 timed out; check whatever "
                       "filters forwarded/routed traffic from the bridge to your "
                       "uplink (e.g. a host firewall's default-deny FORWARD policy)")
+
+            if group in aws_manifests:
+                results.extend(aws_credential_results(
+                    incus, aws_manifests[group], group, cfg["guest_user"], datetime.now(timezone.utc)))
 
     for status, msg in results:
         print(f"{status:4} {msg}")

@@ -29,14 +29,13 @@ does not reach an existing `config.yaml`. Add the new entries yourself.
 | `ssh.known_hosts`           | `~/.config/agent-sandbox/known_hosts`       | Dedicated known-hosts file. `rm` and `up` purge the instance's entry.                                       |
 | `ssh.extra_pubkeys`         | `[]`                                        | Additional `authorized_keys` lines for the guest user ([connecting](connecting.md#from-another-machine))    |
 | `defaults.resources`        | `cpu: 4`, `memory: 8GiB`, `disk: 30GiB`     | Per-sandbox limits, overridable per manifest. `disk` also sizes the base image build.                       |
-| `defaults.auth`             | `[github-gh, aws-sso]`                      | Auth providers. A manifest's `auth` replaces this list.                                                     |
+| `defaults.auth`             | `[github-gh, aws-creds]`                    | Auth providers. A manifest's `auth` replaces this list.                                                     |
 | `defaults.mounts`           | `~/.agents/skills` read-only                | Mounts for every sandbox. A manifest entry with the same `guest` path replaces one.                         |
 | `defaults.copy_binaries`    | `[~/.local/bin/omp]`                        | Host binaries `build-base` copies into the image. Missing ones are skipped with a warning.                  |
 | `defaults.env`              | `{}`                                        | Guest environment for every sandbox                                                                         |
 | `defaults.git.name`/`email` | empty                                       | Guest git identity. Empty means the host's `git config user.name`/`user.email`.                             |
 | `defaults.remotes`          | `{}`                                        | Extra git remotes for every repo ([manifest](manifest.md))                                                  |
-| `aws.profile`               | `sage-bedrock`                              | Profile `aws-sso` logs in with                                                                              |
-| `aws.config_file`           | `~/.aws/config`                             | File `aws-sso` copies into the guest                                                                        |
+| `aws.profiles`              | `[sage-bedrock]`                            | Host AWS profiles whose short-lived credentials `aws-creds` pushes into sandboxes. A manifest's `aws_profiles` adds to it. |
 | `harness_env`               | Bedrock settings for Claude Code            | Guest environment for the harness CLIs. Also written to `~/.claude/settings.json`.                          |
 
 Guest environment precedence, lowest to highest: `harness_env`,

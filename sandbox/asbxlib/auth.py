@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from . import config
+from . import awscreds
 from . import ui
 from .errors import AsbxError
 from .incus import Incus
+from .manifest import Manifest
 
 # ---------------------------------------------------------------------------
 # Auth phase — declarative providers
@@ -12,7 +13,8 @@ from .incus import Incus
 _SIGNING_SCOPE = "admin:ssh_signing_key"
 
 
-def _provider_github_gh(incus: Incus, instance: str, cfg: dict) -> None:
+def _provider_github_gh(incus: Incus, manifest: Manifest, cfg: dict) -> None:
+    instance = manifest.instance
     guest_user = cfg["guest_user"]
     check = incus.exec_in(instance, ["gh", "auth", "status"], user=guest_user, check=False)
     authed = check.returncode == 0
@@ -51,32 +53,26 @@ def _provider_github_gh(incus: Incus, instance: str, cfg: dict) -> None:
         raise AsbxError(f"auth provider github-gh failed on step {n} ({label}){detail}")
 
 
-def _provider_aws_sso(incus: Incus, instance: str, cfg: dict) -> None:
+def _provider_aws_creds(incus: Incus, manifest: Manifest, cfg: dict) -> None:
+    if not manifest.aws_profiles:
+        raise AsbxError("auth provider aws-creds: no profiles; "
+                        "set aws.profiles in config.yaml or aws_profiles in the manifest")
+    instance = manifest.instance
     guest_user = cfg["guest_user"]
-    profile = cfg["aws"]["profile"]
-    check = incus.exec_in(instance, ["aws", "sts", "get-caller-identity", "--profile", profile],
-                           user=guest_user, check=False)
-    if check.returncode == 0:
-        ui.ok(f"{instance}: aws-sso already authenticated")
-        return
-    config_file = config.expand(cfg["aws"]["config_file"])
-    if not config_file.exists():
-        raise AsbxError(f"auth provider aws-sso failed on step 1: {config_file} not found")
-    aws_dir = f"/home/{guest_user}/.aws"
-    incus.exec_in(instance, ["mkdir", "-p", aws_dir], user=guest_user)
-    guest_uid = incus.uid_of(instance, guest_user)
-    incus.file_push(instance, str(config_file), f"{aws_dir}/config", mode="0600",
-                     uid=guest_uid, gid=guest_uid)
-    proc = incus.exec_in(instance, ["aws", "sso", "login", "--use-device-code", "--profile", profile],
-                          user=guest_user, tty=True, check=False)
-    if proc.returncode != 0:
-        raise AsbxError("auth provider aws-sso failed on step 2")
+    creds = {p: awscreds.export_profile(p) for p in manifest.aws_profiles}
+    # Export first: a failed export leaves the guest's existing credentials alone.
+    # Then wipe the legacy SSO cache, any copied config and any credentials
+    # file, so the guest keeps only what push() writes next.
+    incus.exec_in(instance, ["rm", "-rf", f"/home/{guest_user}/.aws"], user=guest_user)
+    awscreds.push(incus, instance, guest_user, creds)
+    ui.ok(f"{instance}: aws credentials for {', '.join(manifest.aws_profiles)}")
 
 
 BUILTIN_AUTH_PROVIDERS = {
     "github-gh": _provider_github_gh,
-    "aws-sso": _provider_aws_sso,
+    "aws-creds": _provider_aws_creds,
 }
+
 
 def _run_command_provider(incus: Incus, instance: str, spec: dict, guest_user: str) -> None:
     check_cmd = spec.get("check")
@@ -91,12 +87,13 @@ def _run_command_provider(incus: Incus, instance: str, spec: dict, guest_user: s
         raise AsbxError(f"auth provider command failed on step 1: {spec['command']}")
 
 
-def run_auth(incus: Incus, instance: str, providers: list, cfg: dict) -> None:
-    for provider in providers:
+def run_auth(incus: Incus, manifest: Manifest, cfg: dict) -> None:
+    instance = manifest.instance
+    for provider in manifest.auth:
         if isinstance(provider, dict):
             _run_command_provider(incus, instance, provider, cfg["guest_user"])
             continue
         name = provider
         if name not in BUILTIN_AUTH_PROVIDERS:
             raise AsbxError(f"unknown auth provider '{name}'")
-        BUILTIN_AUTH_PROVIDERS[name](incus, instance, cfg)
+        BUILTIN_AUTH_PROVIDERS[name](incus, manifest, cfg)

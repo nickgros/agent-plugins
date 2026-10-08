@@ -43,3 +43,8 @@ def test_normalize_env_stringifies_scalars_yaml_style():
 def test_normalize_env_rejects_non_scalar_values_naming_the_key():
     with pytest.raises(AsbxError, match="env.BAD"):
         config.normalize_env({"BAD": ["a"]}, "env")
+
+
+def test_deep_merge_rejects_removed_aws_profile_key():
+    with pytest.raises(AsbxError, match=r"unknown key 'aws\.profile'"):
+        config.deep_merge(config.DEFAULT_CONFIG, {"aws": {"profile": "x"}})

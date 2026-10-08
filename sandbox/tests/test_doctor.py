@@ -1,6 +1,8 @@
 """Tests for asbxlib.doctor."""
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from fake_incus import FakeIncus
@@ -105,3 +107,101 @@ def test_cmd_doctor_fails_when_incus_is_too_old_for_bridged_nic_acls(doctor_env,
     assert rc == 1
     assert "FAIL Incus supports bridged-NIC ACLs" in out
     assert "6.0.0" in out
+
+
+# ---------------------------------------------------------------------------
+# aws-creds checks
+# ---------------------------------------------------------------------------
+
+def _aws_manifest(auth=("aws-creds",), profiles=("p",)):
+    from asbxlib.manifest import Manifest
+    return Manifest(path="/demo.yaml", name="demo", instance="sandbox-demo",
+                    auth=list(auth), aws_profiles=list(profiles))
+
+
+def _creds_body(minutes: int) -> str:
+    from datetime import datetime, timedelta, timezone
+    exp = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+    return '{"Version":1,"AccessKeyId":"A","SecretAccessKey":"S","SessionToken":"T","Expiration":"%s"}' % exp
+
+
+@pytest.fixture
+def aws_env(doctor_env, monkeypatch):
+    import subprocess
+    monkeypatch.setattr(doctor.manifest_mod, "load_manifest", lambda g, cfg: _aws_manifest())
+    monkeypatch.setattr(doctor.host, "systemctl_user",
+                        lambda *a: subprocess.CompletedProcess([], 0, stdout="active", stderr=""))
+
+
+def _aws_incus(cfg, **creds_stub):
+    fake = _incus(cfg)
+    fake.stub("ip", "-4", "route", "show", "default", stdout="")
+    if creds_stub:
+        fake.stub("cat", "/home/agent/.asbx/aws/p.json", **creds_stub)
+    return fake
+
+
+def test_cmd_doctor_reports_timer_and_fresh_credentials(aws_env, capsys, cfg):
+    cmd = _aws_incus(cfg, stdout=_creds_body(60))
+
+    doctor.cmd_doctor(cmd, cfg, fix=False)
+
+    out = capsys.readouterr().out
+    assert "PASS asbx-aws-refresh.timer active" in out
+    assert "PASS aws CLI on PATH" in out
+    assert re.search(r"PASS sandbox-demo: aws profile p: expires in (59|60) min\n", out)
+
+
+def test_aws_credential_results_use_the_given_clock_and_report_each_profile():
+    from datetime import datetime, timezone
+    now = datetime(2030, 1, 1, 12, 0, tzinfo=timezone.utc)
+    fake = FakeIncus()
+    body = '{"Expiration": "2030-01-01T12:05:00+00:00"}'
+    fake.stub("cat", "/home/agent/.asbx/aws/soon.json", stdout=body)
+    fake.stub("cat", "/home/agent/.asbx/aws/gone.json", rc=1)
+
+    results = doctor.aws_credential_results(
+        fake, _aws_manifest(profiles=["soon", "gone"]), "demo", "agent", now)
+
+    assert results[0][0] == "WARN" and "aws profile soon: expires in 5 min" in results[0][1]
+    assert results[1][0] == "FAIL" and "aws profile gone: missing" in results[1][1]
+    assert all("asbx aws-refresh demo" in msg for _s, msg in results)
+
+def test_cmd_doctor_flags_expired_credentials_with_remedy(aws_env, capsys, cfg):
+    cmd = _aws_incus(cfg, stdout=_creds_body(-5))
+
+    rc = doctor.cmd_doctor(cmd, cfg, fix=False)
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "FAIL sandbox-demo: aws profile p: expired" in out
+    assert "asbx aws-refresh" in out and "aws sso login" in out
+
+
+def test_cmd_doctor_flags_missing_credential_file(aws_env, capsys, cfg):
+    cmd = _aws_incus(cfg, rc=1, stderr="No such file")
+
+    rc = doctor.cmd_doctor(cmd, cfg, fix=False)
+
+    assert rc == 1
+    assert "FAIL sandbox-demo: aws profile p: missing" in capsys.readouterr().out
+
+
+def test_cmd_doctor_warns_when_timer_inactive(aws_env, monkeypatch, capsys, cfg):
+    import subprocess
+    monkeypatch.setattr(doctor.host, "systemctl_user",
+                        lambda *a: subprocess.CompletedProcess([], 3, stdout="inactive", stderr=""))
+
+    doctor.cmd_doctor(_aws_incus(cfg, stdout=_creds_body(60)), cfg, fix=False)
+
+    assert "WARN asbx-aws-refresh.timer active" in capsys.readouterr().out
+
+
+def test_cmd_doctor_skips_aws_checks_without_aws_creds_provider(doctor_env, monkeypatch, capsys, cfg):
+    monkeypatch.setattr(doctor.manifest_mod, "load_manifest",
+                        lambda g, c: _aws_manifest(auth=["github-gh"]))
+
+    doctor.cmd_doctor(_aws_incus(cfg), cfg, fix=False)
+
+    out = capsys.readouterr().out
+    assert "aws" not in out.replace("sandbox-demo", "")

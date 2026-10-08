@@ -83,7 +83,7 @@ def cmd_up(incus: Incus, cfg: dict, group: str, no_auth: bool, no_provision: boo
     guest.write_git_identity(incus, instance, cfg)
 
     if not no_auth:
-        auth.run_auth(incus, instance, manifest_obj.auth, cfg)
+        auth.run_auth(incus, manifest_obj, cfg)
     if not no_provision:
         provision.run_provision(incus, instance, manifest_obj, cfg["guest_user"])
 

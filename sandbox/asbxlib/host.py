@@ -11,6 +11,8 @@ import subprocess
 from pathlib import Path
 from typing import NoReturn
 
+from .errors import AsbxError
+
 
 def which(name: str) -> bool:
     return shutil.which(name) is not None
@@ -19,6 +21,24 @@ def which(name: str) -> bool:
 def git_config_get(key: str) -> str:
     proc = subprocess.run(["git", "config", "--get", key], capture_output=True, text=True)
     return proc.stdout.strip()
+
+
+def aws_export_credentials(profile: str) -> subprocess.CompletedProcess:
+    if not which("aws"):
+        raise AsbxError("aws CLI not found on the host PATH")
+    return subprocess.run(
+        ["aws", "configure", "export-credentials", "--profile", profile, "--format", "process"],
+        capture_output=True, text=True, check=False)
+
+
+def aws_profile_region(profile: str) -> str:
+    proc = subprocess.run(["aws", "configure", "get", "region", "--profile", profile],
+                          capture_output=True, text=True, check=False)
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def systemctl_user(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True, check=False)
 
 
 def resolves(name: str) -> bool:

@@ -17,7 +17,8 @@ for PyYAML, then calls `cli.main`. This is the stdlib plus PyYAML only.
 | `guest.py`     | In-guest setup: cloud-init, waits, mounts and their readability rule, `authorized_keys`, env, git identity  |
 | `netacl.py`    | Egress ACL rules, attach to NIC (fail closed), Incus version gate                                            |
 | `sshconf.py`   | Generated per-instance SSH config and the `~/.ssh/config` Include line                                       |
-| `auth.py`      | Auth providers (`github-gh`, `aws-sso`, inline `{command, check}`)                                           |
+| `auth.py`      | Auth providers (`github-gh`, `aws-creds`, inline `{command, check}`)                                         |
+| `awscreds.py`  | Export host AWS credentials, push them into guests, `aws-refresh`, systemd user timer                        |
 | `provision.py` | Clone, remotes, compose, setup hook                                                                          |
 | `lifecycle.py` | `list`, `ssh`, `shell`, start/stop/restart, snapshot/restore, `rebuild` (repo safety), `rm`                  |
 | `doctor.py`    | `doctor` checks and `--fix`                                                                                  |

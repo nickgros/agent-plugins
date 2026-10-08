@@ -11,6 +11,7 @@ from .incus import Incus
 from . import config
 from . import manifest as manifest_mod
 from . import auth
+from . import awscreds
 from . import provision
 from . import baseimage
 from . import up
@@ -51,6 +52,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = add("auth", _handle_auth, help="run the auth phase for a group")
     sp.add_argument("group")
+
+    sp = add("aws-refresh",
+             lambda incus, cfg, args: awscreds.install_timer() if args.install_timer
+             else awscreds.cmd_aws_refresh(incus, cfg, args.group),
+             help="push fresh AWS credentials into running sandboxes")
+    sp.add_argument("group", nargs="?")
+    sp.add_argument("--install-timer", action="store_true",
+                    help="install and start the systemd user timer that re-pushes every 10 minutes")
 
     sp = add("provision", _handle_provision, help="run the provision phase for a group")
     sp.add_argument("group")
@@ -102,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _handle_auth(incus: Incus, cfg: dict, args) -> None:
     manifest = manifest_mod.load_manifest(args.group, cfg)
-    auth.run_auth(incus, manifest.instance, manifest.auth, cfg)
+    auth.run_auth(incus, manifest, cfg)
 
 
 def _handle_provision(incus: Incus, cfg: dict, args) -> None:

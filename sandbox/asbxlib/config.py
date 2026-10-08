@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -62,7 +63,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "defaults": {
         "resources": {"cpu": 4, "memory": "8GiB", "disk": "30GiB"},
-        "auth": ["github-gh", "aws-sso"],
+        "auth": ["github-gh", "aws-creds"],
         "mounts": [
             {"host": "~/.agents/skills", "guest": "/home/agent/.agents/skills", "mode": "ro"},
         ],
@@ -72,8 +73,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "remotes": {},
     },
     "aws": {
-        "profile": "sage-bedrock",
-        "config_file": "~/.aws/config",
+        # Host profiles whose short-lived credentials may be pushed into
+        # sandboxes. A manifest's `aws_profiles` adds to this list.
+        "profiles": ["sage-bedrock"],
     },
     "harness_env": {
         "CLAUDE_CODE_USE_BEDROCK": "1",
@@ -117,6 +119,16 @@ def normalize_env(env: dict, where: str) -> dict[str, str]:
     return out
 
 
+# An AWS profile name becomes a guest file name and an INI section header.
+AWS_PROFILE_RE = re.compile(r"[A-Za-z0-9._-]+")
+AWS_PROFILES_RULE = "a list of AWS profile names matching [A-Za-z0-9._-]+"
+
+
+def is_aws_profile_list(value: Any) -> bool:
+    return isinstance(value, list) and all(
+        isinstance(p, str) and AWS_PROFILE_RE.fullmatch(p) for p in value)
+
+
 def load_config() -> dict[str, Any]:
     if not config_path().exists():
         raise AsbxError(f"no config at {config_path()}; run 'asbx init' first")
@@ -125,6 +137,8 @@ def load_config() -> dict[str, Any]:
     cfg = deep_merge(DEFAULT_CONFIG, raw)
     cfg["defaults"]["env"] = normalize_env(cfg["defaults"]["env"], "defaults.env")
     cfg["harness_env"] = normalize_env(cfg["harness_env"], "harness_env")
+    if not is_aws_profile_list(cfg["aws"]["profiles"]):
+        raise AsbxError(f"config {config_path()}: 'aws.profiles' must be {AWS_PROFILES_RULE}")
     return cfg
 
 

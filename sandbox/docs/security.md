@@ -61,9 +61,12 @@ The agent can use any credential placed in the guest:
 - `github-gh` leaves a `gh` token in the guest. It has gh's default scopes
   (including `repo`) plus `admin:ssh_signing_key`, and an SSH signing key
   registered to your GitHub account.
-- `aws-sso` copies `aws.config_file` in and caches an SSO token. Together
-  with `harness_env` (for example `AWS_PROFILE`), it gives the guest that
-  profile's AWS access.
+- `aws-creds` pushes short-lived credentials for the profiles in
+  `aws.profiles` and the manifest's `aws_profiles`, as
+  `~/.asbx/aws/<profile>.json` read through `credential_process`. The guest
+  holds no SSO token, no refresh token and no other profile, and it has no
+  channel back to the host. A leaked credential works until it expires
+  (about an hour); the host timer replaces it every 10 minutes.
 - Everything in `harness_env` and `env` is exported to every guest shell
   through `/etc/profile.d/asbx-env.sh`.
 

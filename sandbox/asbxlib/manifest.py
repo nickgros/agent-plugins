@@ -17,6 +17,7 @@ from .errors import AsbxError
 
 MANIFEST_KEYS = {
     "name", "resources", "repos", "mounts", "services", "env", "auth", "setup", "remotes",
+    "aws_profiles",
 }
 REPO_KEYS = {"url", "dir", "ref", "setup", "remotes"}
 MOUNT_KEYS = {"host", "guest", "mode"}
@@ -50,14 +51,15 @@ class Manifest:
     path: str
     name: str
     instance: str
-    resources: dict[str, Any]
-    repos: list[Repo]
-    mounts: list[Mount]
-    compose_path: Optional[str]
-    env: dict[str, str]
-    auth: list[Any]
-    setup_path: Optional[str]
-    remotes: dict[str, str]
+    resources: dict[str, Any] = field(default_factory=dict)
+    repos: list[Repo] = field(default_factory=list)
+    mounts: list[Mount] = field(default_factory=list)
+    compose_path: Optional[str] = None
+    env: dict[str, str] = field(default_factory=dict)
+    auth: list[Any] = field(default_factory=list)
+    setup_path: Optional[str] = None
+    remotes: dict[str, str] = field(default_factory=dict)
+    aws_profiles: list[str] = field(default_factory=list)
 
 
 def repo_dir(repo: dict) -> str:
@@ -106,6 +108,7 @@ def validate_manifest_dict(data: dict, manifest_path: str) -> dict:
         seen_dirs.add(d)
 
     _validate_remotes_dict(data.get("remotes"), manifest_path, "remotes")
+    _validate_aws_profiles(data.get("aws_profiles"), manifest_path, "aws_profiles")
 
     mounts = data.get("mounts") or []
     for mount in mounts:
@@ -164,6 +167,14 @@ def _validate_remotes_dict(remotes: Any, manifest_path: str, field: str) -> None
         raise AsbxError(f"manifest {manifest_path}: '{field}' must be a mapping of name to org/URL strings")
 
 
+def _validate_aws_profiles(value: Any, manifest_path: str, field: str) -> list[str]:
+    if value is None:
+        return []
+    if not config.is_aws_profile_list(value):
+        raise AsbxError(f"manifest {manifest_path}: '{field}' must be {config.AWS_PROFILES_RULE}")
+    return value
+
+
 def resolve_remote_url(repo_url: str, spec: str) -> str:
     """Resolves a `remotes` manifest value to a concrete git remote URL.
 
@@ -212,6 +223,7 @@ def load_manifest(group: str, cfg: dict) -> Manifest:
     manifest_mounts = [Mount.from_dict(m) for m in (data.get("mounts") or [])]
     mounts = merge_mounts(default_mounts, manifest_mounts)
     auth = data.get("auth", cfg["defaults"]["auth"])
+    aws_profiles = list(dict.fromkeys([*cfg["aws"]["profiles"], *(data.get("aws_profiles") or [])]))
     env = config.normalize_env(data.get("env") or {}, "env")
 
     # Top-level `remotes` wins over a repo's own entry of the same name: the
@@ -249,6 +261,7 @@ def load_manifest(group: str, cfg: dict) -> Manifest:
         auth=auth,
         setup_path=setup_path,
         remotes=global_remotes,
+        aws_profiles=aws_profiles,
     )
 
 

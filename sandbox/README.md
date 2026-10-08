@@ -46,7 +46,7 @@ Write a manifest at `~/.config/agent-sandbox/projects/demo.yaml`:
 ```yaml
 repos:
   - url: https://github.com/nickgros/agent-plugins.git
-auth: [github-gh]   # the default also runs aws-sso, which needs ~/.aws/config
+auth: [github-gh]   # the default also runs aws-creds, which needs a valid host `aws sso login`
 ```
 
 ```sh
@@ -63,7 +63,8 @@ asbx ssh demo          # or connect to host `sandbox-demo` from your IDE
 | `install [--force]`                  | Symlink `asbx` into `~/.local/bin`                              |
 | `build-base`                         | Bake or refresh the golden base image                           |
 | `up <group>`                         | Create or start a sandbox, then auth and provision it           |
-| `auth <group>`                       | Re-run the auth providers that aren't satisfied                 |
+| `auth <group>`                       | Re-run the auth providers that aren't satisfied (`aws-creds` always re-pushes) |
+| `aws-refresh [group] [--install-timer]` | Push fresh AWS credentials into running sandboxes; install the 10-minute systemd user timer |
 | `provision <group>`                  | Re-run clone, compose and setup hook                            |
 | `list`                               | List every manifest's sandbox and its state                     |
 | `ssh <group> [cmd...]`               | SSH into the sandbox                                            |

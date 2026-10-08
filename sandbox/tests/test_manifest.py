@@ -234,3 +234,36 @@ def test_manifest_unknown_key_inside_list_entries_is_named(tmp_path, body, path)
     f.write_text(body)
     with pytest.raises(AsbxError, match=f"unknown key '{path}'"):
         manifest.validate_manifest_dict(__import__("yaml").safe_load(body), str(f))
+
+
+# ---------------------------------------------------------------------------
+# aws profiles
+# ---------------------------------------------------------------------------
+
+def test_load_manifest_aws_profiles_are_union_global_first(config_root, cfg):
+    cfg["aws"]["profiles"] = ["a"]
+    (config_root / "demo.yaml").write_text("aws_profiles: [b, a]\n")
+
+    assert manifest.load_manifest("demo", cfg).aws_profiles == ["a", "b"]
+
+
+def test_load_manifest_aws_profiles_default_to_global_list(config_root, cfg):
+    (config_root / "demo.yaml").write_text("")
+
+    assert manifest.load_manifest("demo", cfg).aws_profiles == cfg["aws"]["profiles"]
+
+
+@pytest.mark.parametrize("value", [["../x"], ["a b"], "a", [1], ["[x]"], ["p\n"]])
+def test_manifest_aws_profiles_rejects_unsafe_names(value):
+    with pytest.raises(AsbxError, match="aws_profiles"):
+        manifest.validate_manifest_dict({"aws_profiles": value}, "/tmp/demo.yaml")
+
+
+@pytest.mark.parametrize("value", [["../x"], ["p\n"], "a"])
+def test_load_config_rejects_unsafe_global_profiles(config_root, value):
+    from asbxlib import config
+    import yaml
+    config.config_path().write_text(yaml.safe_dump({"aws": {"profiles": value}}))
+
+    with pytest.raises(AsbxError, match=r"config .*'aws\.profiles'"):
+        config.load_config()

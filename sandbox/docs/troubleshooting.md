@@ -72,16 +72,22 @@ Run `asbx auth <group>`. Providers that are still authenticated are skipped.
 The gh token lacks `admin:ssh_signing_key`. Run `asbx auth <group>`, which
 widens the token with `gh auth refresh`.
 
-## `aws sso login`: missing SSO configuration values
+## `aws-creds`: could not export credentials on the host
 
-The error says `Missing the following required SSO configuration values:
-sso_start_url, sso_region`. `aws sso login --profile <aws.profile>` needs a
-profile that has an `sso_session` itself.
+`asbx auth`, `asbx up` or `asbx aws-refresh` reports `aws profile <p>: could
+not export credentials on the host`. The host's SSO session for that profile
+expired or was never started. Run `aws sso login --profile <p>` on the host
+(for a role-assumption profile, log in to its `source_profile`), then run
+`asbx aws-refresh <group>`. `aws sts get-caller-identity --profile <p>` on the
+host confirms the session.
 
-If `aws.profile` names a role-assumption profile (`role_arn` plus
-`source_profile`, as with cross-account Bedrock), set `aws.profile` to the
-`source_profile` name instead. Once that profile's SSO token is cached, the
-role profile resolves automatically.
+`yields long-term credentials` means the profile has static access keys. Only
+temporary credentials are pushed to sandboxes; use an SSO or role profile.
 
-`aws.profile` is used only by the `aws-sso` provider. Keep
-`harness_env.AWS_PROFILE` pointed at the role profile.
+If the `asbx-aws-refresh` service fails with `ModuleNotFoundError: yaml`, the
+Python that ran `--install-timer` lacks PyYAML. Re-run `asbx aws-refresh
+--install-timer` with an interpreter that has it.
+
+A config written for the removed `aws-sso` provider fails with `unknown key
+'aws.profile'`. Replace the `aws:` block with `aws: {profiles: [<profile>]}`
+and `aws-sso` in `defaults.auth` with `aws-creds`.
