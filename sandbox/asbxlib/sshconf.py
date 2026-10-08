@@ -4,6 +4,7 @@ from pathlib import Path
 
 from . import config
 from . import host
+from . import manifest as manifest_mod
 from . import ui
 
 
@@ -19,6 +20,30 @@ def render_ssh_config_block(instance: str, hostname: str, ssh_key: str, known_ho
         f"    StrictHostKeyChecking accept-new\n"
         f"    UserKnownHostsFile {known_hosts}\n"
     )
+
+
+def render_remote_stanza(instance: str, hostname: str, guest_user: str, jump: str,
+                         identity: str) -> str:
+    """Host block for a machine that is not the Incus host. A literal alias, not
+    a `sandbox-*` wildcard: VSCode's host list shows only literal Host names, and
+    adds its own bare-name entry on connect when it finds none."""
+    return (
+        f"Host {instance}\n"
+        f"    HostName {hostname}\n"
+        f"    User {guest_user}\n"
+        f"    ProxyJump {jump}\n"
+        f"    IdentityFile {identity}\n"
+        f"    IdentitiesOnly yes\n"
+        f"    StrictHostKeyChecking no\n"
+        f"    UserKnownHostsFile /dev/null\n"
+        f"    LogLevel ERROR\n"
+    )
+
+
+def cmd_ssh_config(cfg: dict, group: str, jump: str, identity: str) -> None:
+    instance = manifest_mod.load_manifest(group, cfg).instance
+    print(render_remote_stanza(instance, instance_hostname(instance, cfg),
+                               cfg["guest_user"], jump, identity), end="")
 
 
 def config_file(cfg: dict, instance: str) -> Path:

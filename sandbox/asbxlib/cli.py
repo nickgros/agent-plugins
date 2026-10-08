@@ -17,6 +17,7 @@ from . import up
 from . import lifecycle
 from . import doctor
 from . import hostsetup
+from . import sshconf
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -60,6 +61,14 @@ def build_parser() -> argparse.ArgumentParser:
              help="ssh into a sandbox")
     sp.add_argument("group")
     sp.add_argument("cmd", nargs=argparse.REMAINDER)
+
+    sp = add("ssh-config", lambda incus, cfg, args: sshconf.cmd_ssh_config(cfg, args.group, args.jump, args.identity),
+             help="print the ~/.ssh/config stanza for another machine")
+    sp.add_argument("group")
+    sp.add_argument("--jump", required=True, metavar="USER@HOST",
+                    help="how the other machine reaches this Incus host")
+    sp.add_argument("--identity", default="~/.ssh/id_ed25519",
+                    help="private key on the other machine (default: %(default)s)")
 
     sp = add("shell", lambda incus, cfg, args: lifecycle.cmd_shell(incus, cfg, args.group, args.root),
              help="incus exec shell (host-side rescue)")

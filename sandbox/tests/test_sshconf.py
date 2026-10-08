@@ -54,3 +54,35 @@ def test_write_ssh_config_writes_the_derived_hostname_and_drops_a_stale_host_key
     assert "    HostName sandbox-demo.incus\n" in body
     assert "    User agent\n" in body
     assert "sandbox-demo.incus" not in known_hosts.read_text()
+
+
+# ---------------------------------------------------------------------------
+# render_remote_stanza / cmd_ssh_config
+# ---------------------------------------------------------------------------
+
+def test_render_remote_stanza_is_a_literal_host_block_through_the_jump():
+    rendered = sshconf.render_remote_stanza(
+        "sandbox-demo", "sandbox-demo.incus", "agent", "me@workstation", "~/.ssh/id_ed25519")
+    assert rendered == (
+        "Host sandbox-demo\n"
+        "    HostName sandbox-demo.incus\n"
+        "    User agent\n"
+        "    ProxyJump me@workstation\n"
+        "    IdentityFile ~/.ssh/id_ed25519\n"
+        "    IdentitiesOnly yes\n"
+        "    StrictHostKeyChecking no\n"
+        "    UserKnownHostsFile /dev/null\n"
+        "    LogLevel ERROR\n"
+    )
+
+
+def test_cmd_ssh_config_uses_the_manifest_instance_name(cfg, config_root, capsys):
+    (config_root / "demo.yaml").write_text("name: custom\n")
+    cfg["instance_prefix"] = "sandbox-"
+
+    sshconf.cmd_ssh_config(cfg, "demo", "me@workstation", "~/.ssh/id_ed25519")
+
+    out = capsys.readouterr().out
+    assert "Host sandbox-custom\n" in out
+    assert "HostName sandbox-custom.incus" in out
+    assert "ProxyJump me@workstation" in out

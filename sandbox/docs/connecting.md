@@ -36,11 +36,13 @@ normally do, for example over Tailscale. From there, SSH continues to
 2. Run `asbx up <group>`. On every run, `up` rewrites the guest user's
    `authorized_keys` as the asbx key plus these keys.
 
-3. On the other machine, add this to `~/.ssh/config`:
+3. On the host, print the stanza for that machine, then paste it into its
+   `~/.ssh/config`:
 
    ```
-   Host sandbox-*
-       HostName %h.incus
+   $ asbx ssh-config demo --jump you@workstation
+   Host sandbox-demo
+       HostName sandbox-demo.incus
        User agent
        ProxyJump you@workstation
        IdentityFile ~/.ssh/id_ed25519
@@ -50,8 +52,12 @@ normally do, for example over Tailscale. From there, SSH continues to
        LogLevel ERROR
    ```
 
-   `sandbox-*` assumes the default `instance_prefix`. `User` is
-   `guest_user`.
+   `--jump` is how the other machine reaches the host. `--identity` sets the
+   private key path on that machine. `User` is `guest_user`. Add one block
+   per sandbox. Do not use a `Host sandbox-*` wildcard: VSCode lists only
+   literal host names. If you type the name instead of picking it, VSCode
+   writes its own `Host sandbox-demo` / `HostName sandbox-demo` block at the
+   top of the file, and that block wins.
 
 VSCode Remote-SSH honours `ProxyJump` from this file. JetBrains Gateway has
 not been checked.

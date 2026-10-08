@@ -68,6 +68,7 @@ asbx ssh demo          # or connect to host `sandbox-demo` from your IDE
 | `list`                               | List every manifest's sandbox and its state                     |
 | `ssh <group> [cmd...]`               | SSH into the sandbox                                            |
 | `shell <group> [--root]`             | `incus exec` shell, for when SSH is broken                      |
+| `ssh-config <group> --jump USER@HOST` | Print the SSH stanza for another machine                        |
 | `start` / `stop` / `restart <group>` | Incus lifecycle wrappers                                        |
 | `snapshot <group> [label]`           | Snapshot the sandbox                                            |
 | `restore <group> <label>`            | Restore a snapshot                                              |

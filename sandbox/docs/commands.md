@@ -80,5 +80,6 @@ restarts the sandbox and rewrites the SSH config.
 | Command                  | Behaviour                                                                                   |
 | ------------------------ | ------------------------------------------------------------------------------------------- |
 | `ssh <group> [cmd...]`   | `ssh -F <generated config> <instance> [cmd]`                                                |
+| `ssh-config <group> --jump USER@HOST [--identity PATH]` | Print the `~/.ssh/config` stanza for another machine. Changes nothing |
 | `shell <group> [--root]` | `incus exec` shell as the guest user, or as root with `--root`                              |
 | `list`                   | For each manifest: instance, group, state, egress mode, and a note if the manifest changed  |
