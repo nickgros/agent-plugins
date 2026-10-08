@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: 'Review a diff since a fixed point (commit, branch, tag, merge-base) across parallel axes: scope, spec, correctness, security, standards, testability, test quality. Use when the user wants a branch, PR, or work-in-progress reviewed, or says "review since X".'
+description: 'Review a diff since a fixed point (commit, branch, tag, merge-base) across parallel axes: scope, spec, correctness, security, performance, standards, testability, test quality. Use when the user wants a branch, PR, or work-in-progress reviewed, or says "review since X".'
 ---
 
 Review the diff between `HEAD` and a fixed point the user supplies. Each axis runs as its own parallel sub-agent with its own brief under `axes/`, so no axis's findings colour another's. This skill selects the axes, dispatches them, and aggregates.
@@ -11,6 +11,7 @@ Review the diff between `HEAD` and a fixed point the user supplies. Each axis ru
 | **Spec** | Does it do what the spec asked? | a spec is found (step 2) |
 | **Correctness** | Is it right, independent of the spec? | always |
 | **Security** | Can untrusted input reach a dangerous operation? | the diff touches input parsing or request handlers, authn/authz, crypto, secrets or config, shell/SQL/path/URL construction, deserialization, or dependency manifests |
+| **Performance** | Is it needlessly slow or costly at realistic scale (extra round-trips, missing index, N+1, unbounded work)? | the diff adds or changes code that performs I/O (database, network, file, cache), queries, loops over collections, or schema/index definitions |
 | **Standards** | Is it well made, per the repo's standards and the smell baseline? | always |
 | **Testability** | Can the production code be unit-tested cheaply through its interface? | the diff adds or changes production logic (not config, docs, or generated files) |
 | **Test Quality** | Are the tests thorough, correctly labeled, and of high quality? | the diff touches production logic or tests |
@@ -58,7 +59,7 @@ Spawn one sub-agent per selected axis, all in a single batch. Each prompt carrie
 
 ### 6. Aggregate
 
-Present the reports under `##` headings in this order, verbatim or lightly cleaned: **Scope**, **Spec**, **Correctness**, **Security**, **Standards**, **Testability**, **Test Quality**. The order runs from _is it the right change_ through _is it right_ to _is it well made_. Keep each finding under the axis that reported it and in that axis's order (see _Why multiple axes_).
+Present the reports under `##` headings in this order, verbatim or lightly cleaned: **Scope**, **Spec**, **Correctness**, **Security**, **Performance**, **Standards**, **Testability**, **Test Quality**. The order runs from _is it the right change_ through _is it right_ to _is it well made_. Keep each finding under the axis that reported it and in that axis's order (see _Why multiple axes_).
 
 Then one line listing skipped axes with their reasons, and a one-line summary: total findings per axis, and the worst issue _within each axis_ (if any). Name no single winner across axes: that's the reranking the separation exists to prevent.
 
@@ -69,6 +70,7 @@ A change can pass some axes and fail others:
 - Follows every standard but implements the wrong thing → **Standards pass, Spec fail.**
 - Does exactly what the issue asked but crashes on empty input → **Spec pass, Correctness fail.**
 - Correct and well tested, but 1,200 lines mixing a rename with a new feature → **Scope fail.**
+- Correct and secure, but issues two queries where one would do, or one that misses an index → **Performance fail.**
 - Correct, but only testable by mocking three owned modules → **Testability fail.**
 - Passes everything else, but the tests are mislabeled, vacuous, or missing → **Test Quality fail.**
 
