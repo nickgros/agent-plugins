@@ -10,7 +10,6 @@ from . import config
 from . import host
 from . import guest
 from . import sshconf
-from . import tailscale
 from . import ui
 from . import up
 from . import manifest as manifest_mod
@@ -48,16 +47,12 @@ def cmd_list(incus: Incus, cfg: dict) -> None:
             current = manifest_mod.manifest_sha256(manifest.path)
             if recorded and recorded != current:
                 drift = "manifest: drifted"
-        status = tailscale.tailscale_status(incus, instance) if exists and state == "Running" else None
-        tailnet_name = ""
-        if status:
-            tailnet_name = status.get("Self", {}).get("DNSName", "").rstrip(".")
-        rows.append((instance, group, state, tailnet_name, egress_mode, drift))
+        rows.append((instance, group, state, egress_mode, drift))
 
     if not rows:
         print("no manifests found in " + str(config.projects_dir()))
         return
-    header = ("INSTANCE", "GROUP", "STATE", "TAILNET", "EGRESS", "NOTE")
+    header = ("INSTANCE", "GROUP", "STATE", "EGRESS", "NOTE")
     widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(header)]
     def fmt(row):
         return "  ".join(str(c).ljust(w) for c, w in zip(row, widths))
@@ -163,7 +158,7 @@ def cmd_restore(incus: Incus, cfg: dict, group: str, label: str, yes: bool) -> N
         incus.run("copy", copy_name, instance)
     incus.run("start", instance)
     guest.wait_for_agent(incus, instance)
-    sshconf.write_ssh_config(incus, instance, cfg)
+    sshconf.write_ssh_config(instance, cfg)
     ui.ok(f"{instance} restored to {label}")
 
 
@@ -205,11 +200,11 @@ def cmd_rebuild(incus: Incus, cfg: dict, group: str, force: bool, yes: bool) -> 
         if not ui.confirm_exact(f"type '{group}' to confirm rebuild of {instance}: ", group):
             raise AsbxError("aborted")
 
-    cmd_rm(incus, cfg, group, yes=True, keep_node=False)
+    cmd_rm(incus, cfg, group, yes=True)
     up.cmd_up(incus, cfg, group, no_auth=False, no_provision=False)
 
 
-def cmd_rm(incus: Incus, cfg: dict, group: str, yes: bool, keep_node: bool) -> None:
+def cmd_rm(incus: Incus, cfg: dict, group: str, yes: bool) -> None:
     manifest = manifest_mod.load_manifest(group, cfg)
     instance = manifest.instance
 
@@ -217,22 +212,10 @@ def cmd_rm(incus: Incus, cfg: dict, group: str, yes: bool, keep_node: bool) -> N
         if not ui.confirm(f"delete {instance}? [y/N] "):
             raise AsbxError("aborted")
 
-    hostname = None
-    if incus.instance_exists(instance):
-        status = tailscale.tailscale_status(incus, instance)
-        if status:
-            hostname = status.get("Self", {}).get("DNSName", "").rstrip(".")
-        if not keep_node:
-            proc = incus.exec_in(instance, ["tailscale", "logout"], user="root", check=False)
-            if proc.returncode != 0:
-                ui.warn(f"could not deregister tailnet node {instance}; remove it at https://login.tailscale.com/admin/machines")
-
     incus.run("delete", instance, "--force", check=False)
 
     sshconf.remove_ssh_config(cfg, instance)
-
-    known_hosts = config.expand(cfg["ssh"]["known_hosts"])
-    if hostname:
-        host.forget_host_key(known_hosts, hostname)
+    host.forget_host_key(config.expand(cfg["ssh"]["known_hosts"]),
+                         sshconf.instance_hostname(instance, cfg))
 
     ui.ok(f"removed {instance}")

@@ -4,12 +4,12 @@ that touch the host (not a guest instance) go through, mirroring the rule that
 """
 from __future__ import annotations
 
-import json
 import os
 import shutil
+import socket
 import subprocess
 from pathlib import Path
-from typing import NoReturn, Optional
+from typing import NoReturn
 
 
 def which(name: str) -> bool:
@@ -21,14 +21,13 @@ def git_config_get(key: str) -> str:
     return proc.stdout.strip()
 
 
-def tailscale_status() -> Optional[dict]:
-    proc = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True)
-    if proc.returncode != 0:
-        return None
+def resolves(name: str) -> bool:
+    """True when the host's resolver can turn `name` into an address."""
     try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return None
+        socket.getaddrinfo(name, 22, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return False
+    return True
 
 
 def forget_host_key(known_hosts: Path, hostname: str) -> None:

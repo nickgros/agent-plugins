@@ -25,9 +25,6 @@ def cmd_init(incus: Incus) -> None:
     config.projects_dir().mkdir(parents=True, exist_ok=True)
 
     cfg = dict(config.DEFAULT_CONFIG)
-    auth_key = ui.ask("Tailscale reusable auth key for tag:sandbox (blank to skip): ")
-    cfg["tailscale"] = dict(cfg["tailscale"])
-    cfg["tailscale"]["auth_key"] = auth_key
 
     host.write_private_text(config.config_path(), yaml.safe_dump(cfg, sort_keys=False))
     ui.ok(f"wrote {config.config_path()}")

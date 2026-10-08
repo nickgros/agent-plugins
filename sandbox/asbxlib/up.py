@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import auth, config, guest, manifest, netacl, provision, sshconf, tailscale, ui
+from . import auth, config, guest, manifest, netacl, provision, sshconf, ui
 from .errors import AsbxError
 from .incus import Incus
 
@@ -55,6 +55,17 @@ def cmd_up(incus: Incus, cfg: dict, group: str, no_auth: bool, no_provision: boo
         guest.wait_for_agent(incus, instance)
         guest.wait_for_cloud_init(incus, instance)
 
+        # A first `up` that died between create and apply_nic_acl leaves an
+        # unfiltered instance; the ACL is (re)applied here rather than assumed.
+        egress_mode = incus.config_get(instance, "user.asbx.egress_mode")
+        if egress_mode == "guest-nft":
+            raise AsbxError(
+                f"{instance} was built with the removed in-guest firewall fallback, "
+                f"which the agent can disable; run 'asbx rebuild {group}'"
+            )
+        if egress_mode != "acl":
+            netacl.apply_nic_acl(incus, instance, cfg)
+
     # Mounts are synced on every `up`, not just at creation: adding a mount to
     # a manifest has to reach an existing sandbox for `up` to be idempotent.
     if guest.sync_mounts(incus, instance, manifest_obj.mounts):
@@ -63,9 +74,10 @@ def cmd_up(incus: Incus, cfg: dict, group: str, no_auth: bool, no_provision: boo
         guest.wait_for_agent(incus, instance)
         guest.wait_for_cloud_init(incus, instance)
 
-    ui.ok(f"{instance}: tailscale")
-    tailscale.run_tailscale_up(incus, instance, cfg)
-    sshconf.write_ssh_config(incus, instance, cfg)
+    guest.sync_authorized_keys(incus, instance, cfg)
+
+    ui.ok(f"{instance}: ssh config")
+    sshconf.write_ssh_config(instance, cfg)
 
     guest.write_guest_env(incus, instance, cfg, manifest_obj.env)
     guest.write_git_identity(incus, instance, cfg)

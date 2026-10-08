@@ -18,10 +18,3 @@ def confirm(question: str) -> bool:
 
 def confirm_exact(question: str, expected: str) -> bool:
     return input(question).strip() == expected
-
-
-def ask(question: str, default: str = "") -> str:
-    try:
-        return input(question).strip()
-    except EOFError:
-        return default

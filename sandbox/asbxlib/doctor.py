@@ -61,21 +61,18 @@ def cmd_doctor(incus: Incus, cfg: Optional[dict], fix: bool) -> int:
 
     check("PyYAML importable", True, "")  # we're already running with yaml imported
 
-    ts_on_path = host.which("tailscale")
-    check("tailscale on PATH", ts_on_path, "not found")
-    ts_running = False
-    if ts_on_path:
-        status = host.tailscale_status()
-        ts_running = bool(status) and status.get("BackendState") == "Running"
-    check("tailscale backend Running", ts_running, "backend not Running")
+    version = netacl.parse_incus_version(drivers_info) if server_ok else None
+    if server_ok:
+        check("Incus supports bridged-NIC ACLs",
+              version is not None and netacl.bridged_nic_acl_supported(version),
+              f"server_version {'.'.join(map(str, version)) if version else 'unreadable'}; need >= 6.0.4 "
+              "on the 6.0 LTS or >= 6.10 (7.0 LTS recommended); sandboxes cannot be filtered without it")
 
     if cfg is None:
         check("config present", False, f"no config at {config.config_path()}; run 'asbx init' first")
         for status, msg in results:
             print(f"{status:4} {msg}")
         return 1 if any(s == "FAIL" for s, _ in results) else 0
-
-    check("tailscale.auth_key set", bool(cfg["tailscale"]["auth_key"]), "empty in config")
 
     ssh_key = config.expand(cfg["ssh"]["key"])
     ssh_pub = Path(str(ssh_key) + ".pub")
@@ -137,7 +134,19 @@ def cmd_doctor(incus: Incus, cfg: Optional[dict], fix: bool) -> int:
         egress_mode = incus.config_get(instance, "user.asbx.egress_mode") if exists else "n/a"
         results.append(("PASS", f"manifest {group}: instance {instance} state={state} egress_mode={egress_mode}"))
 
+        if exists:
+            check(f"{instance}: egress ACL attached", egress_mode == "acl",
+                  f"egress_mode={egress_mode or 'unset'}; "
+                  + (f"run 'asbx rebuild {group}' (the in-guest firewall fallback is gone)"
+                     if egress_mode == "guest-nft" else f"run 'asbx up {group}'"))
+
         if state == "Running":
+            hostname = sshconf.instance_hostname(instance, cfg)
+            check(f"{instance}: {hostname} resolves on the host", host.resolves(hostname),
+                  f"the host resolver does not know {hostname}; point systemd-resolved at the bridge: "
+                  f"resolvectl dns {cfg['network']['name']} <bridge ipv4 address> && "
+                  f"resolvectl domain {cfg['network']['name']} '~{cfg['network']['dns_domain']}' "
+                  "(see sandbox/docs/host-setup.md, 'Name resolution', to make it persistent)")
             has_route = netcheck.guest_has_ipv4_default_route(incus, instance)
             check(f"{instance}: guest has IPv4 default route", has_route,
                   "no default IPv4 route in the guest; DHCP likely never completed "

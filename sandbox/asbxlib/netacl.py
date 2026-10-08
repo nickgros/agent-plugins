@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 from typing import Optional
 
 import yaml
@@ -134,52 +135,52 @@ def ensure_acl(incus: Incus, cfg: dict) -> None:
        f"{len(rules['intra_bridge_drops'])} intra-bridge drops)")
 
 
-def render_guest_nft(rules: dict) -> str:
-    """The /etc/nftables.d/asbx-lan.nft body: one drop per LAN/intra-bridge
-    CIDR (ip vs ip6 by family) plus the gateway's non-DNS port drops."""
-    nft_lines = ["#!/usr/sbin/nft -f", "table inet asbx {", "  chain output {", "    type filter hook output priority 0;"]
-    for cidr in rules["lan_drops"] + rules["intra_bridge_drops"]:
-        family = "ip6" if ipaddress.ip_network(cidr).version == 6 else "ip"
-        nft_lines.append(f"    {family} daddr {cidr} drop;")
-    for rule in rules["gateway_port_rules"]:
-        nft_lines.append(f"    ip daddr {rules['gateway']} {rule['protocol']} "
-                         f"dport {rule['destination_port']} drop;")
-    nft_lines += ["  }", "}"]
-    return "\n".join(nft_lines) + "\n"
-
-
-def apply_nic_acl(incus: Incus, instance: str, cfg: dict) -> str:
-    """Applies the egress ACL to the instance's NIC. Returns 'acl' or
-    'guest-nft' depending on which egress_mode was used."""
+def apply_nic_acl(incus: Incus, instance: str, cfg: dict) -> None:
+    """Attaches the egress ACL to the instance's NIC, or raises. There is no
+    weaker fallback: a firewall inside the guest is not a control when the
+    agent has root there, so an instance that can't be filtered must not run
+    as if it were."""
     net_cfg = cfg["network"]
-    incus.device_remove(instance, "eth0")
-    proc = incus.device_add(
-        instance, "eth0", "nic",
-        f"network={net_cfg['name']}",
+    options = (
         f"security.acls={net_cfg['acl']}",
         "security.acls.default.ingress.action=allow",
         "security.acls.default.egress.action=allow",
     )
-    if proc.returncode == 0:
-        incus.config_set(instance, "user.asbx.egress_mode", "acl")
-        return "acl"
+    # eth0 comes from the default profile until it is overridden, after which
+    # it is an instance-local device that can only be updated.
+    proc = incus.device_override(instance, "eth0", *options)
+    if proc.returncode != 0:
+        proc = incus.device_set(instance, "eth0", *options)
+    if proc.returncode != 0:
+        raise AsbxError(
+            f"could not attach network ACL {net_cfg['acl']} to {instance}'s NIC "
+            f"(bridged-NIC security.acls needs Incus >= 6.0.4 on the 6.0 LTS or >= 6.10; "
+            f"run 'asbx doctor'):\n{(proc.stderr or '').strip()}"
+        )
+    incus.config_set(instance, "user.asbx.egress_mode", "acl")
 
-    ui.warn("bridge ACLs unavailable; falling back to in-guest nftables (agent can disable it)")
-    incus.device_add(instance, "eth0", "nic", f"network={net_cfg['name']}")
-    rules = compute_acl_rules_for_network(incus, cfg)
-    nft_body = render_guest_nft(rules)
-    incus.exec_in(instance, ["mkdir", "-p", "/etc/nftables.d"], user="root", check=False)
-    incus.push_text(instance, "/etc/nftables.d/asbx-lan.nft", nft_body, mode="0644", uid=0, gid=0)
-    include_line = 'include "/etc/nftables.d/*.nft"'
-    incus.exec_in(
-        instance,
-        ["bash", "-c", f"grep -qxF '{include_line}' /etc/nftables.conf || echo '{include_line}' >> /etc/nftables.conf"],
-        user="root", check=False,
-    )
-    incus.exec_in(instance, ["systemctl", "restart", "nftables"], user="root", check=False)
-    incus.exec_in(instance, ["systemctl", "enable", "nftables"], user="root", check=False)
-    incus.config_set(instance, "user.asbx.egress_mode", "guest-nft")
-    return "guest-nft"
+
+_SERVER_VERSION_RE = re.compile(r"^\s*server_version:\s*\"?(\d+)\.(\d+)(?:\.(\d+))?", re.MULTILINE)
+
+
+def parse_incus_version(info: str) -> Optional[tuple[int, int, int]]:
+    """The `server_version` from `incus info` output as (major, minor, patch)."""
+    m = _SERVER_VERSION_RE.search(info)
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
+
+
+def bridged_nic_acl_supported(version: tuple[int, int, int]) -> bool:
+    """Whether `security.acls` is accepted on a bridged NIC. Read from the
+    Incus source (`device/nic_bridged.go`): absent at v6.0.0-v6.0.3, v6.1,
+    v6.2, v6.3, v6.5 and v6.8; present at v6.0.4, v6.10, v6.15, v6.20 and
+    v7.0. 6.9 was not checked and counts as unsupported; later releases are
+    assumed to keep the option."""
+    major, minor, patch = version
+    if major >= 7:
+        return True
+    return major == 6 and (minor >= 10 or (minor == 0 and patch >= 4))
 
 
 def acl_matches_config(incus: Incus, cfg: dict) -> bool:

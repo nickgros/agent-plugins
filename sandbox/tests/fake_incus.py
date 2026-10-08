@@ -69,6 +69,8 @@ class FakeIncus(Incus):
             if _matches(argv, tokens):
                 rc, stdout, stderr = rule_rc, rule_stdout, rule_stderr
                 break
+        if "-t" in argv or tty:
+            stdout = stderr = None  # a real tty run inherits the terminal, captures nothing
         proc = subprocess.CompletedProcess(args=["incus", *argv], returncode=rc,
                                             stdout=stdout, stderr=stderr)
         if check and rc != 0:

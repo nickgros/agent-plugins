@@ -51,14 +51,17 @@ def _fake_manifest(instance: str = "sandbox-demo") -> manifest.Manifest:
     )
 
 
-def test_cmd_rm_with_yes_deletes_instance_removes_ssh_config_and_logs_out_tailscale(monkeypatch, cfg, tmp_path):
+KNOWN_HOSTS_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+
+
+def test_cmd_rm_with_yes_deletes_instance_and_removes_its_ssh_config_and_host_key(monkeypatch, cfg, tmp_path):
     fake_manifest = _fake_manifest()
     monkeypatch.setattr(lifecycle.manifest_mod, "load_manifest", lambda group, cfg: fake_manifest)
-    monkeypatch.setattr(lifecycle.tailscale, "tailscale_status",
-                        lambda incus, instance: {"Self": {"DNSName": "sandbox-demo.tail1234.ts.net."}})
 
     cfg["ssh"]["config_dir"] = str(tmp_path / "ssh-confs")
-    cfg["ssh"]["known_hosts"] = str(tmp_path / "known_hosts")
+    known_hosts = tmp_path / "known_hosts"
+    cfg["ssh"]["known_hosts"] = str(known_hosts)
+    known_hosts.write_text(f"sandbox-demo.incus {KNOWN_HOSTS_KEY}\nsandbox-other.incus {KNOWN_HOSTS_KEY}\n")
 
     conf_dir = tmp_path / "ssh-confs"
     conf_dir.mkdir(parents=True, exist_ok=True)
@@ -68,21 +71,13 @@ def test_cmd_rm_with_yes_deletes_instance_removes_ssh_config_and_logs_out_tailsc
     fake = FakeIncus()
     fake.set_instance(exists=True)
 
-    lifecycle.cmd_rm(fake, cfg, "demo", yes=True, keep_node=False)
+    lifecycle.cmd_rm(fake, cfg, "demo", yes=True)
 
     assert ["delete", "sandbox-demo", "--force"] in fake.calls
-    assert any("tailscale logout" in " ".join(c) for c in fake.calls)
     assert not conf_path.exists()
-
-    # keep_node=True: tailscale is never asked to log out.
-    conf_path.write_text("stub\n")
-    fake2 = FakeIncus()
-    fake2.set_instance(exists=True)
-
-    lifecycle.cmd_rm(fake2, cfg, "demo", yes=True, keep_node=True)
-
-    assert not any("tailscale logout" in " ".join(c) for c in fake2.calls)
-    assert not conf_path.exists()
+    remaining = known_hosts.read_text()
+    assert "sandbox-demo.incus" not in remaining
+    assert "sandbox-other.incus" in remaining
 
 
 def test_cmd_rebuild_refuses_when_workspace_repo_is_dirty_and_force_is_false(monkeypatch, cfg):
@@ -118,3 +113,19 @@ def test_cmd_restore_with_unknown_label_raises_before_any_stop_or_delete(monkeyp
 
     assert not any("stop" in " ".join(c) for c in fake.calls)
     assert not any("delete" in " ".join(c) for c in fake.calls)
+
+
+def test_cmd_restore_from_snapshot_restarts_the_instance_and_rewrites_its_ssh_config(monkeypatch, cfg, tmp_path):
+    fake_manifest = _fake_manifest()
+    monkeypatch.setattr(lifecycle.manifest_mod, "load_manifest", lambda group, cfg: fake_manifest)
+    monkeypatch.setattr(lifecycle.guest, "wait_for_agent", lambda *a, **k: None)
+    cfg["ssh"]["config_dir"] = str(tmp_path / "confs")
+    cfg["ssh"]["known_hosts"] = str(tmp_path / "known_hosts")
+
+    fake = FakeIncus()
+    fake.set_snapshots(["pre1"])
+
+    lifecycle.cmd_restore(fake, cfg, "demo", "pre1", yes=True)
+
+    assert ["start", "sandbox-demo"] in fake.calls
+    assert "HostName sandbox-demo.incus" in (tmp_path / "confs" / "sandbox-demo.conf").read_text()

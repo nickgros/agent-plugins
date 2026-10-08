@@ -62,13 +62,11 @@ def test_mount_readable_error_ignores_unreadable_ancestors(tmp_path):
 # render_instance_cloud_init
 # ---------------------------------------------------------------------------
 
-def test_render_instance_cloud_init_has_pubkey_for_guest_user_and_no_authkey():
+def test_render_instance_cloud_init_has_pubkey_for_guest_user():
     rendered = guest.render_instance_cloud_init("sandbox-demo", "dev", "ssh-ed25519 AAAAtest")
     assert "hostname: sandbox-demo" in rendered
     assert "- name: dev" in rendered
     assert "ssh-ed25519 AAAAtest" in rendered
-    # The tailnet auth key must never reach a per-instance cloud-init.
-    assert "authkey" not in rendered.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -184,3 +182,54 @@ def test_write_guest_env_pushes_profile_script_and_claude_settings_with_manifest
     assert settings_path in fake.pushed
     parsed = json.loads(fake.pushed[settings_path])
     assert parsed["env"]["SHARED"] == "manifest-wins"
+
+
+# ---------------------------------------------------------------------------
+# authorized_keys — the asbx key plus ssh.extra_pubkeys
+# ---------------------------------------------------------------------------
+
+KEY_A = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA asbx"
+KEY_B = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB laptop"
+
+
+def test_render_authorized_keys_lists_primary_then_extras_and_drops_duplicates():
+    body = guest.render_authorized_keys(KEY_A + "\n", [KEY_B, KEY_A])
+
+    keys = [line for line in body.splitlines() if not line.startswith("#")]
+    assert keys == [KEY_A, KEY_B]
+
+
+@pytest.mark.parametrize("bad", [
+    'command="touch /pwned" ssh-ed25519 AAAAC3Nza x',
+    "",
+    "ssh-ed25519 AAAAC3Nza x\nssh-ed25519 BBBBC3Nza y",
+    "not-a-key",
+])
+def test_render_authorized_keys_rejects_anything_but_a_bare_single_line_key(bad):
+    with pytest.raises(AsbxError, match="extra_pubkeys"):
+        guest.render_authorized_keys(KEY_A, [bad])
+
+
+def test_sync_authorized_keys_writes_owner_only_file_in_the_guest_users_ssh_dir(cfg, tmp_path):
+    key = tmp_path / "id_ed25519"
+    (tmp_path / "id_ed25519.pub").write_text(KEY_A + "\n")
+    cfg["ssh"]["key"] = str(key)
+    cfg["ssh"]["extra_pubkeys"] = [KEY_B]
+    fake = FakeIncus()
+
+    guest.sync_authorized_keys(fake, "sandbox-demo", cfg)
+
+    assert ["exec", "sandbox-demo", "--", "install", "-d", "-m", "0700",
+            "-o", "1000", "-g", "1000", "/home/agent/.ssh"] in fake.calls
+    pushed = fake.pushed["/home/agent/.ssh/authorized_keys"]
+    assert KEY_A in pushed and KEY_B in pushed
+    push_call = next(c for c in fake.calls if c[:2] == ["file", "push"])
+    assert push_call[3:] == ["sandbox-demo/home/agent/.ssh/authorized_keys",
+                             "--mode", "0600", "--uid", "1000", "--gid", "1000"]
+
+
+def test_sync_authorized_keys_names_the_missing_public_key(cfg, tmp_path):
+    cfg["ssh"]["key"] = str(tmp_path / "absent")
+
+    with pytest.raises(AsbxError, match="asbx init"):
+        guest.sync_authorized_keys(FakeIncus(), "sandbox-demo", cfg)

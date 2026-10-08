@@ -36,11 +36,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "network": {
         "name": "incusbr0",
         "acl": "asbx-egress",
+        # Resolver suffix Incus's managed DNS serves for instances on the
+        # bridge (the network's `dns.domain`, `incus` unless changed).
+        "dns_domain": "incus",
         "block_cidrs": [
             "10.0.0.0/8",
             "172.16.0.0/12",
             "192.168.0.0/16",
             "169.254.0.0/16",
+            # Tailscale's CGNAT range. A host running Tailscale routes it out
+            # tailscale0, and bridge masquerade would present the guest as the
+            # host's own tailnet identity.
+            "100.64.0.0/10",
             "fc00::/7",
             "fe80::/10",
         ],
@@ -49,10 +56,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "key": "~/.config/agent-sandbox/id_ed25519",
         "config_dir": "~/.ssh/agent-sandbox.d",
         "known_hosts": "~/.config/agent-sandbox/known_hosts",
-    },
-    "tailscale": {
-        "auth_key": "",
-        "tags": ["tag:sandbox"],
+        # Extra public keys (full authorized_keys lines) installed for the
+        # guest user alongside `key`.pub, e.g. a laptop's key.
+        "extra_pubkeys": [],
     },
     "defaults": {
         "resources": {"cpu": 4, "memory": "8GiB", "disk": "30GiB"},

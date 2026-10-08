@@ -101,10 +101,7 @@ runcmd:
     https://download.docker.com/linux/debian trixie stable" > /etc/apt/sources.list.d/docker.list
   - apt-get update
   - apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-  # 2. Tailscale
-  - curl -fsSL https://tailscale.com/install.sh | sh
-  - systemctl enable tailscaled
-  # 3. Node LTS into /usr/local (never a shell-profile shim)
+  # 2. Node LTS into /usr/local (never a shell-profile shim)
   - curl -fsSLo /tmp/node.tar.xz {node_url}
   - echo "{node_sha256}  /tmp/node.tar.xz" | sha256sum -c -
   - mkdir -p /usr/local/lib/nodejs
@@ -114,26 +111,26 @@ runcmd:
   - ln -sf /usr/local/lib/nodejs/node/bin/npm /usr/local/bin/npm
   - ln -sf /usr/local/lib/nodejs/node/bin/npx /usr/local/bin/npx
   - npm config set prefix /usr/local --location=global
-  # 4. mise (per-project toolchains only)
+  # 3. mise (per-project toolchains only)
   - MISE_INSTALL_PATH=/usr/local/bin/mise sh -c "$(curl -fsSL https://mise.run)"
   - echo 'eval "$(/usr/local/bin/mise activate bash)"' > /etc/profile.d/asbx-mise.sh
-  # 5. AWS CLI v2
+  # 4. AWS CLI v2
   - curl -fsSLo /tmp/awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
   - unzip -q -d /tmp /tmp/awscliv2.zip
   - /tmp/aws/install
-  # 6. Harness CLIs (as root, into /usr/local)
+  # 5. Harness CLIs (as root, into /usr/local)
   - npm i -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli
-  # 7. opencode (must not run as root)
+  # 6. opencode (must not run as root)
   - runuser -u {guest_user} -- bash -c 'curl -fsSL https://opencode.ai/install | bash'
   - ln -sf /home/{guest_user}/.opencode/bin/opencode /usr/local/bin/opencode
-  # 8. fd-find is installed as fdfind on Debian
+  # 7. fd-find is installed as fdfind on Debian
   - ln -sf /usr/bin/fdfind /usr/local/bin/fd
-  # 9. workspace + skill symlinks
+  # 8. workspace + skill symlinks
   - mkdir -p /workspace /home/{guest_user}/.asbx /home/{guest_user}/.agents/skills /home/{guest_user}/.claude /home/{guest_user}/.codex /home/{guest_user}/.config
   - ln -sf /home/{guest_user}/.agents/skills /home/{guest_user}/.claude/skills
   - ln -sf /home/{guest_user}/.agents/skills /home/{guest_user}/.codex/skills
   - chown -R {guest_user}:{guest_user} /workspace /home/{guest_user}
-  # 10. ssh
+  # 9. ssh
   - systemctl enable ssh
   - sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
 """

@@ -84,10 +84,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--force", action="store_true")
     sp.add_argument("--yes", action="store_true")
 
-    sp = add("rm", lambda incus, cfg, args: lifecycle.cmd_rm(incus, cfg, args.group, args.yes, args.keep_node))
+    sp = add("rm", lambda incus, cfg, args: lifecycle.cmd_rm(incus, cfg, args.group, args.yes))
     sp.add_argument("group")
     sp.add_argument("--yes", action="store_true")
-    sp.add_argument("--keep-node", action="store_true")
 
     return p
 

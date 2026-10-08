@@ -9,31 +9,46 @@ from .incus import Incus
 # Auth phase — declarative providers
 # ---------------------------------------------------------------------------
 
+_SIGNING_SCOPE = "admin:ssh_signing_key"
+
+
 def _provider_github_gh(incus: Incus, instance: str, cfg: dict) -> None:
     guest_user = cfg["guest_user"]
     check = incus.exec_in(instance, ["gh", "auth", "status"], user=guest_user, check=False)
-    if check.returncode == 0:
+    authed = check.returncode == 0
+    if authed and _SIGNING_SCOPE in f"{check.stdout or ''}{check.stderr or ''}":
         ui.ok(f"{instance}: github-gh already authenticated")
         return
     pubkey_path = f"/home/{guest_user}/.ssh/id_ed25519.pub"
+    # (label, argv, tty). Interactive gh steps need the terminal; the key upload
+    # runs captured so its stderr can be inspected and surfaced.
+    if authed:
+        # Logged in, but the token cannot manage signing keys: widen it in place.
+        first = ("refresh scope", ["gh", "auth", "refresh", "--hostname", "github.com",
+                                    "--scopes", _SIGNING_SCOPE], True)
+    else:
+        first = ("login", ["gh", "auth", "login", "--hostname", "github.com",
+                           "--git-protocol", "https", "--scopes", _SIGNING_SCOPE], True)
     steps = [
-        ["gh", "auth", "login", "--hostname", "github.com", "--git-protocol", "https",
-         "--scopes", "admin:public_key"],
-        ["gh", "auth", "setup-git"],
-        ["bash", "-c", "test -f ~/.ssh/id_ed25519 || ssh-keygen -t ed25519 -N '' "
-                        f"-C asbx-{instance} -f ~/.ssh/id_ed25519"],
-        ["gh", "ssh-key", "add", pubkey_path, "--type", "signing",
-         "--title", f"asbx {instance}"],
-        ["bash", "-c", "git config --global gpg.format ssh && "
-                       "git config --global user.signingkey ~/.ssh/id_ed25519.pub && "
-                       "git config --global commit.gpgsign true"],
+        first,
+        ("setup-git", ["gh", "auth", "setup-git"], True),
+        ("keygen", ["bash", "-c", "test -f ~/.ssh/id_ed25519 || ssh-keygen -t ed25519 -N '' "
+                                   f"-C asbx-{instance} -f ~/.ssh/id_ed25519"], True),
+        ("upload signing key", ["gh", "ssh-key", "add", pubkey_path, "--type", "signing",
+                                "--title", f"asbx {instance}"], False),
+        ("git signing config", ["bash", "-c", "git config --global gpg.format ssh && "
+                                              "git config --global user.signingkey ~/.ssh/id_ed25519.pub && "
+                                              "git config --global commit.gpgsign true"], True),
     ]
-    for n, step in enumerate(steps, start=1):
-        proc = incus.exec_in(instance, step, user=guest_user, tty=True, check=False)
-        if proc.returncode != 0 and n == 4 and "key is already in use" in (proc.stderr or ""):
+    for n, (label, argv, tty) in enumerate(steps, start=1):
+        proc = incus.exec_in(instance, argv, user=guest_user, tty=tty, check=False)
+        if proc.returncode == 0:
             continue
-        if proc.returncode != 0:
-            raise AsbxError(f"auth provider github-gh failed on step {n}")
+        stderr = (proc.stderr or "").strip()
+        if label == "upload signing key" and "key is already in use" in stderr:
+            continue
+        detail = f"\n{stderr}" if stderr else ""
+        raise AsbxError(f"auth provider github-gh failed on step {n} ({label}){detail}")
 
 
 def _provider_aws_sso(incus: Incus, instance: str, cfg: dict) -> None:

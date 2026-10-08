@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import ipaddress
 
+import pytest
 import yaml
 
 from fake_incus import FakeIncus
 
-from asbxlib import netacl
+from asbxlib import config, netacl
+from asbxlib.errors import AsbxError
 
 # ---------------------------------------------------------------------------
 # compute_acl_rules
@@ -148,49 +150,72 @@ def test_render_acl_yaml_targets_the_gateway_for_every_port_rule():
     assert {r["action"] for r in egress} == {"drop"}
 
 
+def test_default_block_cidrs_drop_the_tailscale_cgnat_range():
+    rules = netacl.compute_acl_rules("10.210.86.1/24", config.DEFAULT_CONFIG["network"]["block_cidrs"])
+    lan_nets = _nets(rules["lan_drops"])
+    assert any(ipaddress.ip_address("100.100.100.100") in n for n in lan_nets)
+
+
 # ---------------------------------------------------------------------------
-# render_guest_nft / apply_nic_acl — the guest-nftables fallback
+# apply_nic_acl — attaches the ACL to the NIC or raises; never weakens
 # ---------------------------------------------------------------------------
-
-def test_render_guest_nft_emits_ip6_daddr_for_v6_and_ip_daddr_for_v4_with_gateway_port_drops():
-    rules = netacl.compute_acl_rules("10.210.86.1/24", BLOCK_CIDRS)
-    body = netacl.render_guest_nft(rules)
-
-    v6_cidrs = [c for c in rules["lan_drops"] if ipaddress.ip_network(c).version == 6]
-    v4_cidrs = [c for c in rules["lan_drops"] if ipaddress.ip_network(c).version == 4]
-    assert v6_cidrs and v4_cidrs
-    assert any(f"ip6 daddr {c} drop;" in body for c in v6_cidrs)
-    assert any(f"ip daddr {c} drop;" in body for c in v4_cidrs)
-
-    for rule in rules["gateway_port_rules"]:
-        assert (f"ip daddr {rules['gateway']} {rule['protocol']} "
-                f"dport {rule['destination_port']} drop;") in body
-
 
 def _acl_cfg():
     return {"network": {"name": "incusbr0", "acl": "asbx-egress", "block_cidrs": BLOCK_CIDRS}}
 
 
-def test_apply_nic_acl_falls_back_to_guest_nft_when_device_add_security_acls_fails():
-    cfg = _acl_cfg()
+ACL_OPTIONS = ["security.acls=asbx-egress",
+               "security.acls.default.ingress.action=allow",
+               "security.acls.default.egress.action=allow"]
+
+
+def test_apply_nic_acl_overrides_the_profile_nic_and_records_the_mode():
     fake = FakeIncus()
-    fake.stub("device", "add", "security.acls", rc=1)
-    fake.stub("network", "get", "ipv4.address", stdout="10.210.86.1/24")
 
-    mode = netacl.apply_nic_acl(fake, "sandbox-demo", cfg)
+    netacl.apply_nic_acl(fake, "sandbox-demo", _acl_cfg())
 
-    assert mode == "guest-nft"
-    expected = netacl.render_guest_nft(netacl.compute_acl_rules_for_network(fake, cfg))
-    assert fake.pushed["/etc/nftables.d/asbx-lan.nft"] == expected
-    assert ["config", "set", "sandbox-demo", "user.asbx.egress_mode", "guest-nft"] in fake.calls
-
-
-def test_apply_nic_acl_returns_acl_and_pushes_nothing_when_device_add_succeeds():
-    cfg = _acl_cfg()
-    fake = FakeIncus()
-    fake.stub("network", "get", "ipv4.address", stdout="10.210.86.1/24")
-
-    mode = netacl.apply_nic_acl(fake, "sandbox-demo", cfg)
-
-    assert mode == "acl"
+    assert ["config", "device", "override", "sandbox-demo", "eth0", *ACL_OPTIONS] in fake.calls
+    assert ["config", "set", "sandbox-demo", "user.asbx.egress_mode", "acl"] in fake.calls
     assert fake.pushed == {}
+
+
+def test_apply_nic_acl_updates_the_nic_in_place_when_it_is_already_instance_local():
+    fake = FakeIncus()
+    fake.stub("device", "override", rc=1, stderr="Error: The device already exists")
+
+    netacl.apply_nic_acl(fake, "sandbox-demo", _acl_cfg())
+
+    assert ["config", "device", "set", "sandbox-demo", "eth0", *ACL_OPTIONS] in fake.calls
+    assert ["config", "set", "sandbox-demo", "user.asbx.egress_mode", "acl"] in fake.calls
+
+
+def test_apply_nic_acl_raises_and_records_nothing_when_incus_rejects_the_acl():
+    fake = FakeIncus()
+    fake.stub("device", "override", rc=1, stderr="Error: Invalid device option")
+    fake.stub("device", "set", rc=1, stderr='Error: Invalid device option "security.acls"')
+
+    with pytest.raises(AsbxError, match="Invalid device option"):
+        netacl.apply_nic_acl(fake, "sandbox-demo", _acl_cfg())
+
+    assert not any(c[:2] == ["config", "set"] for c in fake.calls)
+    assert fake.pushed == {}
+
+
+# ---------------------------------------------------------------------------
+# Incus version gate
+# ---------------------------------------------------------------------------
+
+def test_parse_incus_version_reads_server_version_from_incus_info():
+    info = 'environment:\n  server: incus\n  server_version: 6.0.0\n  storage: dir\n'
+    assert netacl.parse_incus_version(info) == (6, 0, 0)
+    assert netacl.parse_incus_version('  server_version: "7.0"\n') == (7, 0, 0)
+    assert netacl.parse_incus_version("driver: qemu\n") is None
+
+
+@pytest.mark.parametrize("version,supported", [
+    ((6, 0, 0), False), ((6, 0, 3), False), ((6, 0, 4), True), ((6, 0, 6), True),
+    ((6, 8, 0), False), ((6, 9, 0), False), ((6, 10, 0), True), ((6, 23, 0), True),
+    ((7, 0, 0), True), ((7, 5, 1), True),
+])
+def test_bridged_nic_acl_supported_boundaries(version, supported):
+    assert netacl.bridged_nic_acl_supported(version) is supported

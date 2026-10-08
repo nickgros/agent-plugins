@@ -3,6 +3,7 @@ cloud-init rendering, agent/cloud-init readiness, and guest env/git identity."""
 from __future__ import annotations
 
 import json
+import re
 import stat
 import time
 from pathlib import Path
@@ -121,6 +122,44 @@ def sync_mounts(incus: Incus, instance: str, mounts: list[Mount]) -> bool:
                 f"{(proc.stderr or '').strip()}"
             )
     return True
+
+
+_PUBKEY_RE = re.compile(r"^(ssh-|ecdsa-|sk-)\S+ \S+( [^\r\n]*)?$")
+
+
+def validate_pubkey(key: str) -> str:
+    """Returns `key` stripped, or raises. Accepts only a bare single-line key
+    (type, base64, optional comment): a leading authorized_keys option such as
+    `command=` would otherwise ride along into the guest's authorized_keys."""
+    stripped = key.strip()
+    if not _PUBKEY_RE.match(stripped):
+        raise AsbxError(f"ssh.extra_pubkeys: not a single-line public key: {stripped[:40]!r}")
+    return stripped
+
+
+def render_authorized_keys(primary: str, extras: list[str]) -> str:
+    keys: list[str] = []
+    for key in [primary, *extras]:
+        valid = validate_pubkey(key)
+        if valid not in keys:
+            keys.append(valid)
+    return "# managed by asbx: rewritten on every 'asbx up'\n" + "\n".join(keys) + "\n"
+
+
+def sync_authorized_keys(incus: Incus, instance: str, cfg: dict) -> None:
+    """Makes the guest user's authorized_keys the asbx key plus
+    `ssh.extra_pubkeys`, on every `up`, so a key added to config reaches an
+    existing sandbox."""
+    guest_user = cfg["guest_user"]
+    pub_path = Path(str(config.expand(cfg["ssh"]["key"])) + ".pub")
+    if not pub_path.exists():
+        raise AsbxError(f"ssh public key not found at {pub_path}; run 'asbx init' first")
+    body = render_authorized_keys(pub_path.read_text(), cfg["ssh"]["extra_pubkeys"])
+    uid = incus.uid_of(instance, guest_user)
+    ssh_dir = f"/home/{guest_user}/.ssh"
+    incus.exec_in(instance, ["install", "-d", "-m", "0700", "-o", str(uid), "-g", str(uid), ssh_dir],
+                  user="root")
+    incus.push_text(instance, f"{ssh_dir}/authorized_keys", body, mode="0600", uid=uid, gid=uid)
 
 
 def write_guest_env(incus: Incus, instance: str, cfg: dict, manifest_env: dict) -> None:

@@ -1,13 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
-from .errors import AsbxError
-from .incus import Incus
 from . import config
 from . import host
-from . import tailscale
 from . import ui
 
 
@@ -35,17 +31,15 @@ def remove_ssh_config(cfg: dict, instance: str) -> None:
         path.unlink()
 
 
-def write_ssh_config(incus: Incus, instance: str, cfg: dict) -> Optional[str]:
-    status = tailscale.tailscale_status(incus, instance)
-    if not status:
-        return None
-    self_info = status.get("Self", {})
-    hostname = self_info.get("DNSName", "").rstrip(".")
-    if not hostname:
-        ips = self_info.get("TailscaleIPs") or []
-        if not ips:
-            return None
-        hostname = ips[0]
+def instance_hostname(instance: str, cfg: dict) -> str:
+    """The name the host's resolver gives the instance: its Incus name under
+    the bridge's DNS domain. Derived from config, never read back from the
+    guest, so nothing the agent controls reaches the generated SSH config."""
+    return f"{instance}.{cfg['network']['dns_domain']}"
+
+
+def write_ssh_config(instance: str, cfg: dict) -> str:
+    hostname = instance_hostname(instance, cfg)
 
     known_hosts = config.expand(cfg["ssh"]["known_hosts"])
     host.forget_host_key(known_hosts, hostname)

@@ -124,6 +124,13 @@ class Incus:
     def device_add(self, instance: str, name: str, *device_args: str) -> subprocess.CompletedProcess:
         return self.run("config", "device", "add", instance, name, *device_args, check=False)
 
+    def device_override(self, instance: str, name: str, *device_args: str) -> subprocess.CompletedProcess:
+        """Copies a profile-inherited device onto the instance with `device_args` applied."""
+        return self.run("config", "device", "override", instance, name, *device_args, check=False)
+
+    def device_set(self, instance: str, name: str, *device_args: str) -> subprocess.CompletedProcess:
+        return self.run("config", "device", "set", instance, name, *device_args, check=False)
+
     def device_remove(self, instance: str, name: str) -> None:
         self.run("config", "device", "remove", instance, name, check=False)
 
