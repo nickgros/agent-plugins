@@ -88,6 +88,7 @@ packages:
   - gh
   - less
   - vim
+  - zsh
   - rsync
   - nftables
 

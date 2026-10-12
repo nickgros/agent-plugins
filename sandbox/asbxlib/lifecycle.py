@@ -75,7 +75,8 @@ def cmd_shell(incus: Incus, cfg: dict, group: str, root: bool) -> None:
     manifest = manifest_mod.load_manifest(group, cfg)
     instance = manifest.instance
     user = "root" if root else cfg["guest_user"]
-    incus.exec_in(instance, ["bash", "-l"], user=user, tty=True, check=False)
+    shell = ["bash", "-l"] if root else [config.SHELL_PATHS[cfg["shell"]], "-l"]
+    incus.exec_in(instance, shell, user=user, tty=True, check=False)
 
 
 def cmd_start(incus: Incus, cfg: dict, group: str) -> None:

@@ -31,11 +31,19 @@ def projects_dir() -> Path:
     return config_dir() / "projects"
 
 
+def zsh_dir() -> Path:
+    return config_dir() / "zsh"
+
+
+# Login shells a sandbox can use, mapped to their guest path.
+SHELL_PATHS: dict[str, str] = {"bash": "/bin/bash", "zsh": "/usr/bin/zsh"}
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "guest_user": "agent",
     "instance_prefix": "sandbox-",
     "image_alias": "agent-sandbox-base",
     "base_image_source": "images:debian/13/cloud",
+    "shell": "bash",
     "network": {
         "name": "incusbr0",
         "acl": "asbx-egress",
@@ -254,6 +262,9 @@ def load_config() -> dict[str, Any]:
     harness["sync"] = validate_harness_list(harness["sync"], "harness_settings.sync", credentials=False)
     harness["credentials"] = validate_harness_list(
         harness["credentials"], "harness_settings.credentials", credentials=True)
+    if cfg["shell"] not in SHELL_PATHS:
+        raise AsbxError(
+            f"config {config_path()}: 'shell' must be one of: {', '.join(SHELL_PATHS)}")
     return cfg
 
 

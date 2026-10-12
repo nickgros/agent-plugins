@@ -20,7 +20,7 @@ def up_env(monkeypatch, cfg):
     monkeypatch.setattr(up.manifest, "load_manifest", lambda group, cfg: loaded)
     monkeypatch.setattr(up.netacl, "ensure_acl", lambda incus, cfg: None)
     for name in ("wait_for_agent", "wait_for_cloud_init", "sync_authorized_keys",
-                 "write_guest_env", "write_git_identity"):
+                 "write_guest_env", "write_git_identity", "configure_shell"):
         monkeypatch.setattr(up.guest, name, lambda *a, **k: None)
     monkeypatch.setattr(up.guest, "sync_mounts", lambda *a, **k: False)
     monkeypatch.setattr(up.sshconf, "write_ssh_config", lambda *a, **k: "")

@@ -20,6 +20,7 @@ does not reach an existing `config.yaml`. Add the new entries yourself.
 | `instance_prefix`           | `sandbox-`                                  | Instance name is `<prefix><manifest name>`                                                                  |
 | `image_alias`               | `agent-sandbox-base`                        | Rolling alias `build-base` publishes and `up` creates from                                                  |
 | `base_image_source`         | `images:debian/13/cloud`                    | Image `build-base` starts from                                                                              |
+| `shell`                     | `bash`                                      | Guest login shell for every sandbox: `bash` or `zsh`. See [zsh](#zsh-shell).                                |
 | `network.name`              | `incusbr0`                                  | Incus bridge the sandboxes attach to                                                                        |
 | `network.acl`               | `asbx-egress`                               | Name of the egress ACL                                                                                      |
 | `network.dns_domain`        | `incus`                                     | Bridge `dns.domain`. SSH `HostName` is `<instance>.<dns_domain>`.                                           |
@@ -44,3 +45,22 @@ does not reach an existing `config.yaml`. Add the new entries yourself.
 Guest environment precedence, lowest to highest: `harness_env`,
 `defaults.env`, then the manifest's `env`. The result is written to
 `/etc/profile.d/asbx-env.sh`.
+
+## zsh shell
+
+`shell: zsh` makes zsh the guest user's login shell on the next `asbx up`.
+`asbx shell` and `asbx ssh` then open zsh; `asbx shell --root` stays bash.
+`up` installs zsh if the image predates it and rewrites `/etc/zsh/zprofile` so
+zsh login shells load `/etc/profile.d/asbx-env.sh` and activate mise.
+
+Every file under `~/.config/agent-sandbox/zsh/` (`$ASBX_CONFIG_DIR/zsh/`) is
+pushed to the same relative path under the guest home on `asbx up` and
+`asbx settings-sync`: `zsh/.zshrc` becomes `~/.zshrc`,
+`zsh/.config/starship.toml` becomes `~/.config/starship.toml`. The host dir is
+authoritative; a file removed from it is pruned from the guest on the next
+sync. asbx installs no zsh framework: bootstrap one from your `.zshrc`. With no
+`.zshrc` pushed, the guest gets an empty one so zsh skips its first-run wizard.
+
+Switching back to `shell: bash` and running `asbx up` restores `/bin/bash`
+and prunes the pushed files. Provision hooks, repo `setup` and auth commands
+keep running under `bash -l`.

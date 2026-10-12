@@ -112,6 +112,33 @@ def test_missing_inline_root_warns_and_missing_builtin_is_silent(host_home, cfg,
     assert ".omp/agent" not in err.out + err.err
 
 
+def test_zsh_dir_files_sync_to_guest_home_only_when_shell_is_zsh(host_home, cfg, tmp_path, monkeypatch):
+    monkeypatch.setenv("ASBX_CONFIG_DIR", str(tmp_path / "cfg"))
+    zsh = tmp_path / "cfg" / "zsh"
+    _write(zsh / ".zshrc")
+    _write(zsh / ".config" / "starship.toml")
+    _write(zsh / ".git" / "HEAD")
+    cfg["harness_settings"]["sync"] = []
+
+    cfg["shell"] = "zsh"
+    guests = [f.guest for f in harnesssync.files_for(cfg, _manifest())]
+    assert guests == ["/home/agent/.config/starship.toml", "/home/agent/.zshrc"]
+
+    cfg["shell"] = "bash"
+    assert harnesssync.files_for(cfg, _manifest()) == []
+
+
+def test_missing_zsh_dir_warns(host_home, cfg, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ASBX_CONFIG_DIR", str(tmp_path / "cfg"))
+    cfg["harness_settings"]["sync"] = []
+    cfg["shell"] = "zsh"
+
+    assert harnesssync.files_for(cfg, _manifest()) == []
+
+    err = capsys.readouterr()
+    assert "not found on host" in err.out + err.err
+
+
 def test_credential_name_with_no_files_warns(host_home, cfg, capsys):
     harnesssync.files_for(cfg, _manifest(credentials=["omp-secrets"]))
 

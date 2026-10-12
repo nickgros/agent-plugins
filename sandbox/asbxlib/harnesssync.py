@@ -1,4 +1,4 @@
-"""Host harness settings (omp config, rules, hooks, ...) pushed into sandboxes.
+"""Host harness settings (omp config, rules, hooks, ...) and, with `shell: zsh`, the sandbox zsh dir pushed into sandboxes.
 
 Sync is one way, host to guest, on every `asbx up` and `asbx settings-sync`.
 The host is authoritative: a guest-side edit to a synced file is overwritten on
@@ -107,9 +107,22 @@ def collect(entries: list, guest_user: str, credential: bool) -> list[SyncFile]:
     return out
 
 
+def shell_files(guest_user: str) -> list[SyncFile]:
+    """Files under config_dir()/zsh, mapped to the same relative path under the guest home."""
+    root = config.zsh_dir()
+    if not root.is_dir():
+        ui.warn(f"shell zsh: {root} not found on host; the guest gets an empty ~/.zshrc")
+        return []
+    return [SyncFile(path, guest, _mode(path.stat().st_mode, False))
+            for path, guest in _walk(root, root.resolve(), guest_home(guest_user))]
+
+
 def files_for(cfg: dict, m: manifest.Manifest) -> list[SyncFile]:
     gu = cfg["guest_user"]
     merged: dict[str, SyncFile] = {}
+    if cfg["shell"] == "zsh":
+        for f in shell_files(gu):
+            merged[f.guest] = f
     for f in collect(cfg["harness_settings"]["sync"], gu, False):
         merged[f.guest] = f
     for entry in m.harness_credentials:

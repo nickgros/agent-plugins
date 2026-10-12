@@ -87,6 +87,11 @@ def cmd_up(incus: Incus, cfg: dict, group: str, no_auth: bool, no_provision: boo
         # Settings are a convenience; a bad host file must not block auth and provisioning.
         ui.warn(f"{instance}: harness settings not synced: {e}")
 
+    try:
+        guest.configure_shell(incus, instance, cfg)
+    except AsbxError as e:
+        ui.warn(f"{instance}: shell not configured: {e}")
+
     if not no_auth:
         auth.run_auth(incus, manifest_obj, cfg)
     if not no_provision:

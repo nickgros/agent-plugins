@@ -11,6 +11,7 @@ from typing import Optional
 
 from . import config
 from . import host
+from . import ui
 from .errors import AsbxError
 from .incus import Incus
 from .manifest import Mount
@@ -210,6 +211,37 @@ def write_guest_env(incus: Incus, instance: str, cfg: dict, manifest_env: dict) 
     incus.exec_in(instance, ["mkdir", "-p", f"/home/{guest_user}/.claude"], user=guest_user)
     incus.push_text(instance, f"/home/{guest_user}/.claude/settings.json", claude_settings,
                     mode="0644", uid=guest_uid, gid=guest_uid)
+
+
+ZPROFILE_PATH = "/etc/zsh/zprofile"
+
+
+def render_zprofile() -> str:
+    """Debian's zsh never sources /etc/profile.d; mirror what bash login shells get there."""
+    return ("# managed by asbx: rewritten on every 'asbx up'\n"
+            "[[ -r /etc/profile.d/asbx-env.sh ]] && emulate sh -c '. /etc/profile.d/asbx-env.sh'\n"
+            '[[ -x /usr/local/bin/mise ]] && eval "$(/usr/local/bin/mise activate zsh)"\n')
+
+
+def configure_shell(incus: Incus, instance: str, cfg: dict) -> None:
+    name = cfg["shell"]
+    path = config.SHELL_PATHS[name]
+    guest_user = cfg["guest_user"]
+    if name == "zsh":
+        if incus.exec_in(instance, ["test", "-x", path], user="root", check=False).returncode != 0:
+            ui.ok(f"{instance}: installing zsh")
+            proc = incus.exec_in(
+                instance,
+                ["bash", "-c", "apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q zsh"],
+                user="root", check=False)
+            if proc.returncode != 0:
+                raise AsbxError(f"installing zsh in {instance} failed (exit {proc.returncode})"
+                                + (f"\n{(proc.stderr or '').strip()}" if proc.stderr else ""))
+        incus.push_text(instance, ZPROFILE_PATH, render_zprofile(), mode="0644", uid=0, gid=0)
+        # Without any rc file, zsh starts its interactive newuser wizard.
+        incus.exec_in(instance, ["bash", "-c", "test -e ~/.zshrc || : > ~/.zshrc"], user=guest_user)
+    incus.exec_in(instance, ["usermod", "-s", path, guest_user], user="root")
+    ui.ok(f"{instance}: login shell {name}")
 
 
 def write_git_identity(incus: Incus, instance: str, cfg: dict) -> None:

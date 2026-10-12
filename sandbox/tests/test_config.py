@@ -118,6 +118,14 @@ def test_load_config_rejects_credential_item_in_sync(tmp_path, monkeypatch):
         config.load_config()
 
 
+def test_load_config_rejects_unknown_shell(tmp_path, monkeypatch):
+    monkeypatch.setenv(config.CONFIG_DIR_ENV, str(tmp_path))
+    (tmp_path / "config.yaml").write_text("shell: fish\n")
+
+    with pytest.raises(AsbxError, match="'shell' must be one of: bash, zsh"):
+        config.load_config()
+
+
 def test_load_config_accepts_default_tools_and_stringifies_versions(tmp_path, monkeypatch):
     monkeypatch.setenv(config.CONFIG_DIR_ENV, str(tmp_path))
     (tmp_path / "config.yaml").write_text("defaults:\n  tools:\n    maven: '3.9'\n    java: 21\n")

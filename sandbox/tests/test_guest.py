@@ -265,3 +265,53 @@ def test_render_etc_environment_puts_shims_before_local_bin_before_system_dirs()
     body = guest.render_etc_environment("agent")
     path = next(l for l in body.splitlines() if l.startswith("PATH=")).split('"')[1].split(":")
     assert path[:3] == ["/home/agent/.local/share/mise/shims", "/home/agent/.local/bin", "/usr/local/bin"]
+
+
+# ---------------------------------------------------------------------------
+# configure_shell
+# ---------------------------------------------------------------------------
+
+USERMOD_ZSH = ["exec", "sandbox-demo", "--", "usermod", "-s", "/usr/bin/zsh", "agent"]
+
+
+def _shell_cfg(shell: str) -> dict:
+    return {"shell": shell, "guest_user": "agent"}
+
+
+def test_configure_shell_zsh_installs_when_missing_and_sets_login_shell():
+    fake = FakeIncus()
+    fake.stub("test", "-x", "/usr/bin/zsh", rc=1)
+
+    guest.configure_shell(fake, "sandbox-demo", _shell_cfg("zsh"))
+
+    install = next(i for i, c in enumerate(fake.calls) if "apt-get install -y -q zsh" in c[-1])
+    assert install < fake.calls.index(USERMOD_ZSH)
+    assert "mise activate zsh" in fake.pushed["/etc/zsh/zprofile"]
+    assert "asbx-env.sh" in fake.pushed["/etc/zsh/zprofile"]
+
+
+def test_configure_shell_zsh_present_skips_install():
+    fake = FakeIncus()
+
+    guest.configure_shell(fake, "sandbox-demo", _shell_cfg("zsh"))
+
+    assert not any("apt-get" in " ".join(c) for c in fake.calls)
+    assert USERMOD_ZSH in fake.calls
+
+
+def test_configure_shell_zsh_install_failure_raises():
+    fake = FakeIncus()
+    fake.stub("test", "-x", "/usr/bin/zsh", rc=1)
+    fake.stub("apt-get", rc=100)
+
+    with pytest.raises(AsbxError, match="installing zsh"):
+        guest.configure_shell(fake, "sandbox-demo", _shell_cfg("zsh"))
+
+
+def test_configure_shell_bash_only_sets_login_shell():
+    fake = FakeIncus()
+
+    guest.configure_shell(fake, "sandbox-demo", _shell_cfg("bash"))
+
+    assert ["exec", "sandbox-demo", "--", "usermod", "-s", "/bin/bash", "agent"] in fake.calls
+    assert "/etc/zsh/zprofile" not in fake.pushed
