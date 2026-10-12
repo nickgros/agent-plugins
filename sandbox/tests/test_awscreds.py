@@ -271,11 +271,16 @@ def test_install_timer_writes_units_and_enables_timer(tmp_path, monkeypatch):
     units = tmp_path / ".config/systemd/user"
     service = (units / "asbx-aws-refresh.service").read_text()
     timer = (units / "asbx-aws-refresh.timer").read_text()
+    path = (units / "asbx-aws-refresh.path").read_text()
     assert f"ExecStart=" in service and str(hostsetup.ENTRY_POINT) in service
     assert " aws-refresh\n" in service
     assert "Environment=ASBX_CONFIG_DIR=/cfg/dir" in service
     assert "OnUnitActiveSec=10min" in timer
-    assert recorded == [("daemon-reload",), ("enable", "--now", "asbx-aws-refresh.timer")]
+    assert "PathChanged=%h/.aws/sso/cache\n" in path
+    assert "Unit=asbx-aws-refresh.service\n" in path
+    assert recorded == [("daemon-reload",),
+                        ("enable", "--now", "asbx-aws-refresh.timer"),
+                        ("enable", "--now", "asbx-aws-refresh.path")]
 
 
 def test_install_timer_requires_aws_cli(monkeypatch):

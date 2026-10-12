@@ -4,7 +4,8 @@ The host logs in to SSO and exports short-lived credentials for the allowed
 profiles (`Manifest.aws_profiles`); this module pushes them into the guest as
 `credential_process` files. The guest never holds an SSO token or any profile
 outside that set, and there is no guest-to-host channel. A systemd user timer
-on the host re-pushes them before they expire.
+on the host re-pushes them before they expire, and a systemd path unit
+re-pushes them as soon as `aws sso login` rewrites the SSO token cache.
 """
 from __future__ import annotations
 
@@ -26,6 +27,9 @@ from .incus import Incus
 PROVIDER = "aws-creds"
 TIMER_UNIT = "asbx-aws-refresh.timer"
 SERVICE_UNIT = "asbx-aws-refresh.service"
+PATH_UNIT = "asbx-aws-refresh.path"
+# Where the AWS CLI writes SSO tokens; a login or silent refresh changes it.
+SSO_CACHE_WATCH = "%h/.aws/sso/cache"
 WARN_BELOW = timedelta(minutes=15)
 
 _REQUIRED_FIELDS = ("AccessKeyId", "SecretAccessKey", "SessionToken", "Expiration")
@@ -167,23 +171,31 @@ def install_timer() -> None:
     unit_dir = Path.home() / ".config/systemd/user"
     unit_dir.mkdir(parents=True, exist_ok=True)
 
+    # The sleep debounces the path unit: `aws sso login` writes several cache
+    # files, and a push that starts on the first one can see a half-written
+    # token. Triggers that arrive while the service is active are coalesced.
     service = ["[Unit]", "Description=Push fresh AWS credentials into asbx sandboxes", "",
                "[Service]", "Type=oneshot",
                f"Environment=PATH={os.environ.get('PATH', '')}"]
     if os.environ.get(config.CONFIG_DIR_ENV):
         service.append(f"Environment={config.CONFIG_DIR_ENV}={os.environ[config.CONFIG_DIR_ENV]}")
+    service.append("ExecStartPre=/bin/sleep 2")
     service.append(f"ExecStart={sys.executable} {hostsetup.ENTRY_POINT} aws-refresh")
     timer = ["[Unit]", "Description=Refresh AWS credentials in asbx sandboxes every 10 minutes", "",
              "[Timer]", "OnActiveSec=10s", "OnUnitActiveSec=10min", "",
              "[Install]", "WantedBy=timers.target"]
+    path = ["[Unit]", "Description=Push AWS credentials into asbx sandboxes when the SSO token changes", "",
+            "[Path]", f"PathChanged={SSO_CACHE_WATCH}", f"Unit={SERVICE_UNIT}", "",
+            "[Install]", "WantedBy=paths.target"]
     (unit_dir / SERVICE_UNIT).write_text("\n".join(service) + "\n")
     (unit_dir / TIMER_UNIT).write_text("\n".join(timer) + "\n")
+    (unit_dir / PATH_UNIT).write_text("\n".join(path) + "\n")
 
-    for args in (("daemon-reload",), ("enable", "--now", TIMER_UNIT)):
+    for args in (("daemon-reload",), ("enable", "--now", TIMER_UNIT), ("enable", "--now", PATH_UNIT)):
         proc = host.systemctl_user(*args)
         if proc.returncode != 0:
             raise AsbxError(f"systemctl --user {' '.join(args)} failed:\n{(proc.stderr or '').strip()}")
-    ui.ok(f"installed and started {TIMER_UNIT}")
+    ui.ok(f"installed and started {TIMER_UNIT} and {PATH_UNIT}")
 
 
 def credential_status(body: str, now: datetime) -> tuple[str, str]:

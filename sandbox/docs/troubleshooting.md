@@ -77,9 +77,13 @@ widens the token with `gh auth refresh`.
 `asbx auth`, `asbx up` or `asbx aws-refresh` reports `aws profile <p>: could
 not export credentials on the host`. The host's SSO session for that profile
 expired or was never started. Run `aws sso login --profile <p>` on the host
-(for a role-assumption profile, log in to its `source_profile`), then run
-`asbx aws-refresh <group>`. `aws sts get-caller-identity --profile <p>` on the
-host confirms the session.
+(for a role-assumption profile, log in to its `source_profile`). With the
+path unit installed the sandboxes pick the login up within a few seconds;
+otherwise run `asbx aws-refresh <group>`. `aws sts get-caller-identity
+--profile <p>` on the host confirms the session.
+
+`asbx doctor` warns `asbx-aws-refresh.path active` on an install made before
+the path unit existed. Re-run `asbx aws-refresh --install-timer`.
 
 `yields long-term credentials` means the profile has static access keys. Only
 temporary credentials are pushed to sandboxes; use an SSO or role profile.

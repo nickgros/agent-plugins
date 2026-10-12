@@ -154,6 +154,9 @@ def cmd_doctor(incus: Incus, cfg: Optional[dict], fix: bool) -> int:
         check(f"{awscreds.TIMER_UNIT} active",
               host.systemctl_user("is-active", awscreds.TIMER_UNIT).returncode == 0,
               "run 'asbx aws-refresh --install-timer'", warn_cond=True)
+        check(f"{awscreds.PATH_UNIT} active",
+              host.systemctl_user("is-active", awscreds.PATH_UNIT).returncode == 0,
+              "run 'asbx aws-refresh --install-timer'", warn_cond=True)
 
     for group, instance in manifest_mod.manifest_groups(cfg):
         exists = incus_on_path and server_ok and incus.instance_exists(instance)

@@ -64,7 +64,7 @@ asbx ssh demo          # or connect to host `sandbox-demo` from your IDE
 | `build-base`                         | Bake or refresh the golden base image                           |
 | `up <group>`                         | Create or start a sandbox, then auth and provision it           |
 | `auth <group>`                       | Re-run the auth providers that aren't satisfied (`aws-creds` always re-pushes) |
-| `aws-refresh [group] [--install-timer]` | Push fresh AWS credentials into running sandboxes; install the 10-minute systemd user timer |
+| `aws-refresh [group] [--install-timer]` | Push fresh AWS credentials into running sandboxes; install the 10-minute systemd user timer and the SSO-login path unit |
 | `settings-sync [group]`              | Push host harness settings (`harness_settings`) into running sandboxes; `up` does this too |
 | `provision <group>`                  | Re-run clone, compose and setup hook                            |
 | `list`                               | List every manifest's sandbox and its state                     |

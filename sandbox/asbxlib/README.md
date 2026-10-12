@@ -18,7 +18,7 @@ for PyYAML, then calls `cli.main`. This is the stdlib plus PyYAML only.
 | `netacl.py`      | Egress ACL rules, attach to NIC (fail closed), Incus version gate                                          |
 | `sshconf.py`     | Generated per-instance SSH config and the `~/.ssh/config` Include line                                     |
 | `auth.py`        | Auth providers (`github-gh`, `aws-creds`, inline `{command, check}`)                                       |
-| `awscreds.py`    | Export host AWS credentials, push them into guests, `aws-refresh`, systemd user timer                      |
+| `awscreds.py`    | Export host AWS credentials, push them into guests, `aws-refresh`, systemd user timer and path unit        |
 | `harnesssync.py` | Push host harness settings (omp config, rules, hooks) into guests; `settings-sync`                         |
 | `provision.py`   | Clone, remotes, compose, setup hook                                                                        |
 | `lifecycle.py`   | `list`, `ssh`, `shell`, start/stop/restart, snapshot/restore, `rebuild` (repo safety), `rm`                |

@@ -60,7 +60,8 @@ def build_parser() -> argparse.ArgumentParser:
              help="push fresh AWS credentials into running sandboxes")
     sp.add_argument("group", nargs="?")
     sp.add_argument("--install-timer", action="store_true",
-                    help="install and start the systemd user timer that re-pushes every 10 minutes")
+                    help="install and start the systemd user timer (re-pushes every 10 minutes) "
+                         "and path unit (re-pushes when 'aws sso login' rewrites the token cache)")
 
     sp = add("settings-sync",
              lambda incus, cfg, args: harnesssync.cmd_settings_sync(incus, cfg, args.group),

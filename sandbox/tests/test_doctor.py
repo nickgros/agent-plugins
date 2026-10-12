@@ -148,6 +148,7 @@ def test_cmd_doctor_reports_timer_and_fresh_credentials(aws_env, capsys, cfg):
 
     out = capsys.readouterr().out
     assert "PASS asbx-aws-refresh.timer active" in out
+    assert "PASS asbx-aws-refresh.path active" in out
     assert "PASS aws CLI on PATH" in out
     assert re.search(r"PASS sandbox-demo: aws profile p: expires in (59|60) min\n", out)
 
@@ -195,6 +196,20 @@ def test_cmd_doctor_warns_when_timer_inactive(aws_env, monkeypatch, capsys, cfg)
     doctor.cmd_doctor(_aws_incus(cfg, stdout=_creds_body(60)), cfg, fix=False)
 
     assert "WARN asbx-aws-refresh.timer active" in capsys.readouterr().out
+
+
+def test_cmd_doctor_warns_only_for_the_inactive_path_unit(aws_env, monkeypatch, capsys, cfg):
+    import subprocess
+    monkeypatch.setattr(
+        doctor.host, "systemctl_user",
+        lambda _is_active, unit: subprocess.CompletedProcess([], 0 if unit.endswith(".timer") else 3,
+                                                             stdout="", stderr=""))
+
+    doctor.cmd_doctor(_aws_incus(cfg, stdout=_creds_body(60)), cfg, fix=False)
+
+    out = capsys.readouterr().out
+    assert "PASS asbx-aws-refresh.timer active" in out
+    assert "WARN asbx-aws-refresh.path active" in out
 
 
 def test_cmd_doctor_skips_aws_checks_without_aws_creds_provider(doctor_env, monkeypatch, capsys, cfg):

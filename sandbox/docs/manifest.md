@@ -104,9 +104,11 @@ auth:
     Credential files for profiles no longer allowed are removed.
   - It has no "already authenticated" short-circuit: every run re-exports.
   - Credentials last about an hour. `asbx aws-refresh --install-timer`
-    installs a systemd user timer on the host that re-pushes them every 10
-    minutes (`asbx aws-refresh [group]` does one push by hand). `asbx doctor`
-    reports the timer and each profile's remaining lifetime.
+    installs two systemd user units on the host: a timer that re-pushes them
+    every 10 minutes, and a path unit that re-pushes them within a few
+    seconds of `aws sso login` rewriting `~/.aws/sso/cache`
+    (`asbx aws-refresh [group]` does one push by hand). `asbx doctor`
+    reports both units and each profile's remaining lifetime.
 
 ## Example
 
