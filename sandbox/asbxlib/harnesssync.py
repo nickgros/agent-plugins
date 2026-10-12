@@ -1,4 +1,5 @@
-"""Host harness settings (omp config, rules, hooks, ...) and, with `shell: zsh`, the sandbox zsh dir pushed into sandboxes.
+"""Host harness settings (omp config, rules, hooks, ...) pushed into sandboxes,
+plus the sandbox zsh dir when `shell: zsh` is set.
 
 Sync is one way, host to guest, on every `asbx up` and `asbx settings-sync`.
 The host is authoritative: a guest-side edit to a synced file is overwritten on

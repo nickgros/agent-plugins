@@ -415,3 +415,15 @@ def test_settings_sync_failed_target_returns_1_and_others_still_sync(sync_env, h
     assert harnesssync.cmd_settings_sync(fake, sync_env, None) == 1
 
     assert _synced(fake) == {"sandbox-b"}
+
+
+def test_explicit_sync_entry_wins_over_zsh_dir_file_at_same_guest_path(host_home, cfg, tmp_path, monkeypatch):
+    monkeypatch.setenv("ASBX_CONFIG_DIR", str(tmp_path / "cfg"))
+    _write(tmp_path / "cfg" / "zsh" / ".zshrc", "from zsh dir\n")
+    explicit = _write(host_home / "explicit-rc", "explicit\n")
+    cfg["shell"] = "zsh"
+    cfg["harness_settings"]["sync"] = [{"host": str(explicit), "guest": "~/.zshrc"}]
+
+    files = harnesssync.files_for(cfg, _manifest())
+
+    assert [f.host for f in files] == [explicit]

@@ -178,3 +178,19 @@ def test_cmd_rebuild_refuses_when_workspace_cannot_be_listed(monkeypatch, cfg):
         lifecycle.cmd_rebuild(fake, cfg, "demo", force=False, yes=True)
 
     assert not any("delete" in " ".join(c) for c in fake.calls)
+
+
+@pytest.mark.parametrize("shell,root,expected", [
+    ("zsh", False, "/usr/bin/zsh"),
+    ("bash", False, "/bin/bash"),
+    ("zsh", True, "bash"),
+])
+def test_cmd_shell_runs_the_configured_login_shell_and_root_keeps_bash(
+        monkeypatch, cfg, shell, root, expected):
+    monkeypatch.setattr(lifecycle.manifest_mod, "load_manifest", lambda group, cfg: _fake_manifest())
+    cfg["shell"] = shell
+    fake = FakeIncus()
+
+    lifecycle.cmd_shell(fake, cfg, "demo", root=root)
+
+    assert f"{expected} -l" in " ".join(fake.calls[-1])

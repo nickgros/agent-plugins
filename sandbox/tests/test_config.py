@@ -159,3 +159,10 @@ def test_load_config_rejects_non_mapping_default_tools(tmp_path, monkeypatch):
 
     with pytest.raises(AsbxError):
         config.load_config()
+
+
+def test_load_config_defaults_shell_to_bash(tmp_path, monkeypatch):
+    monkeypatch.setenv(config.CONFIG_DIR_ENV, str(tmp_path))
+    (tmp_path / "config.yaml").write_text("guest_user: agent\n")
+
+    assert config.load_config()["shell"] == "bash"

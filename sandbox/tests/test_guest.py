@@ -315,3 +315,22 @@ def test_configure_shell_bash_only_sets_login_shell():
 
     assert ["exec", "sandbox-demo", "--", "usermod", "-s", "/bin/bash", "agent"] in fake.calls
     assert "/etc/zsh/zprofile" not in fake.pushed
+
+
+def test_configure_shell_zsh_creates_an_empty_zshrc_only_when_absent():
+    fake = FakeIncus()
+
+    guest.configure_shell(fake, "sandbox-demo", _shell_cfg("zsh"))
+
+    assert any("test -e ~/.zshrc || : > ~/.zshrc" in c[-1] for c in fake.calls)
+
+
+def test_configure_shell_zsh_install_failure_leaves_login_shell_alone():
+    fake = FakeIncus()
+    fake.stub("test", "-x", "/usr/bin/zsh", rc=1)
+    fake.stub("apt-get", rc=100)
+
+    with pytest.raises(AsbxError):
+        guest.configure_shell(fake, "sandbox-demo", _shell_cfg("zsh"))
+
+    assert not any("usermod" in c for c in fake.calls)

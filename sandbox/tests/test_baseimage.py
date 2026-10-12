@@ -77,3 +77,8 @@ def test_copy_host_binaries_does_nothing_when_no_binary_exists(tmp_path):
     baseimage.copy_host_binaries(fake, "vm", "dev", [str(tmp_path / "missing")])
 
     assert fake.calls == []
+
+
+def test_render_base_cloud_init_installs_zsh():
+    rendered = baseimage.render_base_cloud_init("dev", "https://example.invalid/node.tar.xz", "abc")
+    assert "\n  - zsh\n" in rendered

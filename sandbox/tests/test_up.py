@@ -87,3 +87,15 @@ def test_cmd_up_syncs_harness_settings_even_with_no_auth_and_no_provision(up_env
     up.cmd_up(_existing_instance(cfg, egress_mode="acl"), cfg, "demo", no_auth=True, no_provision=True)
 
     assert calls == ["sync"]
+
+
+def test_cmd_up_warns_and_continues_when_shell_setup_fails(up_env, cfg, monkeypatch, capsys):
+    def boom(*a, **k):
+        raise AsbxError("installing zsh failed")
+    monkeypatch.setattr(up.guest, "configure_shell", boom)
+    fake = _existing_instance(cfg, egress_mode="acl")
+
+    up.cmd_up(fake, cfg, "demo", no_auth=True, no_provision=True)
+
+    out = capsys.readouterr()
+    assert "shell not configured: installing zsh failed" in out.out + out.err
