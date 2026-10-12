@@ -43,9 +43,9 @@ Bakes the image every sandbox is created from:
 2. Cloud-init installs Docker, Node.js LTS, mise, the AWS CLI, and the
    harness CLIs (`@anthropic-ai/claude-code`, `@openai/codex`,
    `@google/gemini-cli`, opencode). It also runs the omp installer as the
-   guest user (`~/.local/bin/omp`, so `omp update` works in the guest) and
-   puts `~/.local/bin` on PATH for non-login shells through
-   `/etc/environment`.
+   guest user (`~/.local/bin/omp`, so `omp update` works in the guest).
+   `asbx up` (not the image) owns `/etc/environment`, which puts mise shims
+   and `~/.local/bin` on PATH for non-login shells.
 3. Copies the host binaries listed in `defaults.copy_binaries` (empty by
    default) into the guest user's `~/.local/bin`.
 4. Cleans the VM and publishes it as `agent-sandbox-base-<YYYYMMDD>`.

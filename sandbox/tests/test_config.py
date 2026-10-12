@@ -116,3 +116,38 @@ def test_load_config_rejects_credential_item_in_sync(tmp_path, monkeypatch):
 
     with pytest.raises(AsbxError, match="harness_settings.sync: 'omp-mcp' carries credentials"):
         config.load_config()
+
+
+def test_load_config_accepts_default_tools_and_stringifies_versions(tmp_path, monkeypatch):
+    monkeypatch.setenv(config.CONFIG_DIR_ENV, str(tmp_path))
+    (tmp_path / "config.yaml").write_text("defaults:\n  tools:\n    maven: '3.9'\n    java: 21\n")
+
+    assert config.load_config()["defaults"]["tools"] == {"maven": "3.9", "java": "21"}
+
+
+def test_normalize_tools_keeps_ints_and_strings_exactly():
+    assert config.normalize_tools({"java": 21, "python": "3.10", "n:p": "latest"}, "tools") == {
+        "java": "21", "python": "3.10", "n:p": "latest"}
+
+
+@pytest.mark.parametrize("tools, match", [
+    ({"python": 3.1}, "tools.python: quote the version"),
+    ({"java": True}, "tools.java"),
+    ({"maven": ""}, "tools.maven"),
+    ({"maven": "  "}, "tools.maven"),
+    ({"maven": ["3.9"]}, "tools.maven"),
+    ({"": "1"}, "tool names"),
+    ({1: "1"}, "tool names"),
+    (["maven"], "mapping"),
+])
+def test_normalize_tools_rejects_what_would_silently_corrupt_or_fail_later(tools, match):
+    with pytest.raises(AsbxError, match=match):
+        config.normalize_tools(tools, "tools")
+
+
+def test_load_config_rejects_non_mapping_default_tools(tmp_path, monkeypatch):
+    monkeypatch.setenv(config.CONFIG_DIR_ENV, str(tmp_path))
+    (tmp_path / "config.yaml").write_text("defaults:\n  tools: [maven]\n")
+
+    with pytest.raises(AsbxError):
+        config.load_config()

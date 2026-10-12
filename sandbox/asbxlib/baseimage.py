@@ -125,8 +125,6 @@ runcmd:
   - ln -sf /home/{guest_user}/.opencode/bin/opencode /usr/local/bin/opencode
   # 6b. omp: installed as the guest user into ~/.local/bin, so `omp update` can replace it
   - runuser -u {guest_user} -- env HOME=/home/{guest_user} sh -c 'curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.sh | sh -s -- --binary'
-  # Non-login shells (ssh <host> cmd, sshd via pam_env) need ~/.local/bin on PATH too
-  - echo 'PATH="/home/{guest_user}/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/games"' >> /etc/environment
   # 7. fd-find is installed as fdfind on Debian
   - ln -sf /usr/bin/fdfind /usr/local/bin/fd
   # 8. workspace + skill symlinks

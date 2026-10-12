@@ -183,6 +183,9 @@ def test_write_guest_env_pushes_profile_script_and_claude_settings_with_manifest
     parsed = json.loads(fake.pushed[settings_path])
     assert parsed["env"]["SHARED"] == "manifest-wins"
 
+    # Shims before ~/.local/bin before /usr/local/bin: repo pins must beat the base Node.
+    assert 'PATH="/home/agent/.local/share/mise/shims:/home/agent/.local/bin:/usr/local/bin:' in fake.pushed["/etc/environment"]
+
 
 # ---------------------------------------------------------------------------
 # authorized_keys — the asbx key plus ssh.extra_pubkeys
@@ -233,3 +236,32 @@ def test_sync_authorized_keys_names_the_missing_public_key(cfg, tmp_path):
 
     with pytest.raises(AsbxError, match="asbx init"):
         guest.sync_authorized_keys(FakeIncus(), "sandbox-demo", cfg)
+
+
+def test_render_mise_config_is_valid_toml_with_quoted_tool_names():
+    import tomllib
+    parsed = tomllib.loads(guest.render_mise_config({"java": "21", "aqua:apache/maven": "3.9"}))
+    assert parsed["settings"]["trusted_config_paths"] == ["/workspace"]
+    assert parsed["tools"] == {"java": "21", "aqua:apache/maven": "3.9"}
+
+
+def test_render_mise_config_without_tools_has_no_tools_table():
+    import tomllib
+    assert "tools" not in tomllib.loads(guest.render_mise_config({}))
+
+
+def test_write_mise_config_creates_system_dir_and_pushes_root_owned_file():
+    fake = FakeIncus()
+
+    guest.write_mise_config(fake, "sandbox-demo", {"maven": "3.9"})
+
+    assert any(c[-3:] == ["mkdir", "-p", "/etc/mise"] for c in fake.calls)
+    push = next(c for c in fake.calls if c[:2] == ["file", "push"])
+    assert push[3] == "sandbox-demo/etc/mise/config.toml"
+    assert push[4:] == ["--mode", "0644", "--uid", "0", "--gid", "0"]
+
+
+def test_render_etc_environment_puts_shims_before_local_bin_before_system_dirs():
+    body = guest.render_etc_environment("agent")
+    path = next(l for l in body.splitlines() if l.startswith("PATH=")).split('"')[1].split(":")
+    assert path[:3] == ["/home/agent/.local/share/mise/shims", "/home/agent/.local/bin", "/usr/local/bin"]

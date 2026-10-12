@@ -17,7 +17,7 @@ from .errors import AsbxError
 
 MANIFEST_KEYS = {
     "name", "resources", "repos", "mounts", "services", "env", "auth", "setup", "remotes",
-    "aws_profiles", "harness_credentials",
+    "tools", "aws_profiles", "harness_credentials",
 }
 REPO_KEYS = {"url", "dir", "ref", "setup", "remotes"}
 MOUNT_KEYS = {"host", "guest", "mode"}
@@ -61,6 +61,7 @@ class Manifest:
     remotes: dict[str, str] = field(default_factory=dict)
     aws_profiles: list[str] = field(default_factory=list)
     harness_credentials: list[Any] = field(default_factory=list)
+    tools: dict[str, str] = field(default_factory=dict)
 
 
 def repo_dir(repo: dict) -> str:
@@ -239,6 +240,10 @@ def load_manifest(group: str, cfg: dict) -> Manifest:
         ]
     }.values())
     env = config.normalize_env(data.get("env") or {}, "env")
+    tools = {
+        **cfg["defaults"]["tools"],
+        **config.normalize_tools(data.get("tools") or {}, f"manifest {path}: tools"),
+    }
 
     # Top-level `remotes` wins over a repo's own entry of the same name: the
     # group-wide setting is the one the operator states last.
@@ -277,6 +282,7 @@ def load_manifest(group: str, cfg: dict) -> Manifest:
         remotes=global_remotes,
         aws_profiles=aws_profiles,
         harness_credentials=harness_credentials,
+        tools=tools,
     )
 
 

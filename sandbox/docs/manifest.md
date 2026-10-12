@@ -21,10 +21,11 @@ All keys are optional.
 | `mounts`             | Read-only host mounts: `{host, guest, mode: ro}`. Merged with `defaults.mounts` by `guest` path; a manifest entry replaces a default. |
 | `services.compose`   | Compose file pushed into the guest and run with `docker compose -f <path> up -d`.                                                      |
 | `env`                | Environment for repo setup, compose and the setup hook. Also written to `/etc/profile.d/asbx-env.sh`.                                  |
+| `tools`              | mise `tool: version` map (e.g. `java: corretto-21`, `maven: "3.9"`), merged over `defaults.tools` per tool. Written to the guest's `/etc/mise/config.toml`. |
 | `auth`               | Auth providers. Replaces `defaults.auth`. See [below](#auth-providers).                                                                |
 | `aws_profiles`       | Extra host AWS profiles for the `aws-creds` provider, added to `aws.profiles` from `config.yaml`. Names match `[A-Za-z0-9._-]+`.       |
 | `harness_credentials` | Credential-carrying harness items (`omp-mcp`, `omp-env`, `omp-secrets`) or `{host, guest}` entries to push, added to `harness_settings.credentials`. |
-| `setup`              | Provision hook. Pushed to `/home/<guest_user>/.asbx/provision.sh` and run from `/workspace` on every provision, so it must be idempotent. |
+| `setup`              | Provision hook. Pushed to `/home/<guest_user>/.asbx/provision.sh` and run from `/workspace` as a login shell (`bash -l`) on every provision, so it must be idempotent. |
 
 Rules for specific keys:
 
@@ -34,6 +35,25 @@ Rules for specific keys:
 - **`mounts`:** `host` and `guest` are required. `mode` accepts only `ro`.
   Mount sources must be world-readable
   ([security](security.md#host-files)).
+
+## Tools
+
+Every provision rewrites `/etc/mise/config.toml` in the guest with
+`trusted_config_paths = ["/workspace"]` plus the merged `tools`, then runs
+`mise install --yes` in each repo (so repo `mise.toml` pins are installed
+before the repo's `setup:` runs), or in `/workspace` when the manifest has no
+repos. The manifest's `env` applies to the install. Versions are strings or
+integers; quote anything with a dot (`python: "3.10"`), because YAML reads
+`3.10` as the number 3.1, and the loader rejects floats.
+
+`/workspace` is trusted wholesale, and `mise install --yes` executes what a
+repo's `mise.toml` declares (`postinstall` hooks, `exec` templates, `npm:` and
+`http:` backends). Auth providers run before provision, so list only repos you
+trust, and prefer exact version pins over `latest`. The guest PATH puts mise
+shims before `~/.local/bin` and `/usr/local/bin` in every session type
+(`asbx up` rewrites `/etc/environment`), so a repo's pinned `node`/`java`
+wins over the base-image Node inside that repo and the base Node still
+answers elsewhere.
 
 ## Repos
 

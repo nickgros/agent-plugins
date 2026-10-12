@@ -34,6 +34,7 @@ does not reach an existing `config.yaml`. Add the new entries yourself.
 | `defaults.copy_binaries`    | `[]`                                        | Host binaries `build-base` copies into the guest user's `~/.local/bin`. Missing ones are skipped with a warning. omp is installed in the image, not copied. |
 | `defaults.env`              | `{}`                                        | Guest environment for every sandbox                                                                         |
 | `defaults.git.name`/`email` | empty                                       | Guest git identity. Empty means the host's `git config user.name`/`user.email`.                             |
+| `defaults.tools`            | `{}`                                        | mise tool to version for every sandbox, e.g. `maven: "3.9"`. A manifest's `tools` wins per tool ([manifest](manifest.md#tools)). |
 | `defaults.remotes`          | `{}`                                        | Extra git remotes for every repo ([manifest](manifest.md))                                                  |
 | `aws.profiles`              | `[sage-bedrock]`                            | Host AWS profiles whose short-lived credentials `aws-creds` pushes into sandboxes. A manifest's `aws_profiles` adds to it. |
 | `harness_env`               | Bedrock settings for Claude Code            | Guest environment for the harness CLIs. Also written to `~/.claude/settings.json`.                          |

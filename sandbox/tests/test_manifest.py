@@ -225,6 +225,21 @@ def test_load_manifest_env_values_become_strings(config_root, cfg):
     assert manifest.load_manifest("demo", cfg).env == {"PORT": "8080", "DEBUG": "true"}
 
 
+def test_load_manifest_tools_override_default_tools_per_tool(config_root, cfg):
+    cfg["defaults"]["tools"] = {"maven": "3.8", "node": "22"}
+    (config_root / "demo.yaml").write_text("tools:\n  java: 21\n  maven: '3.9'\n")
+
+    assert manifest.load_manifest("demo", cfg).tools == {"node": "22", "maven": "3.9", "java": "21"}
+
+
+@pytest.mark.parametrize("body", ["tools:\n  java: true\n", "tools: [maven]\n"])
+def test_load_manifest_rejects_malformed_tools(config_root, cfg, body):
+    (config_root / "demo.yaml").write_text(body)
+
+    with pytest.raises(AsbxError, match="tools"):
+        manifest.load_manifest("demo", cfg)
+
+
 @pytest.mark.parametrize("body, path", [
     ("repos:\n  - url: https://github.com/x/y.git\n    bogus: 1\n", "repos.bogus"),
     ("mounts:\n  - host: /a\n    guest: /b\n    bogus: 1\n", "mounts.bogus"),

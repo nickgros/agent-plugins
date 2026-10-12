@@ -49,6 +49,41 @@ def render_env_file(env: dict[str, str]) -> str:
     return "\n".join(lines) + ("\n" if lines else "")
 
 
+def render_etc_environment(guest_user: str) -> str:
+    """PAM-session PATH (sshd via pam_env). Mise shims come first so repo pins
+    beat the base-image Node in non-interactive `ssh host cmd` sessions."""
+    home = f"/home/{guest_user}"
+    return ("# managed by asbx: rewritten on every 'asbx up'\n"
+            f'PATH="{home}/.local/share/mise/shims:{home}/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/games"\n')
+
+
+MISE_SYSTEM_CONFIG = "/etc/mise/config.toml"
+
+
+def render_mise_config(tools: dict[str, str]) -> str:
+    """System-scope mise config: trusts /workspace (the guest user already has
+    passwordless root, so this grants nothing new) and carries group-wide tools.
+    json.dumps yields valid TOML basic strings, including for names like
+    `aqua:apache/maven`."""
+    lines = [
+        "# managed by asbx: rewritten on every 'asbx up' and 'asbx provision'",
+        "[settings]",
+        'trusted_config_paths = ["/workspace"]',
+    ]
+    if tools:
+        lines += ["", "[tools]"]
+        lines += [f"{json.dumps(k)} = {json.dumps(v)}" for k, v in tools.items()]
+    return "\n".join(lines) + "\n"
+
+
+def write_mise_config(incus: Incus, instance: str, tools: dict[str, str]) -> None:
+    """System scope (not ~/.config/mise) so the agent's own `mise use -g` edits
+    are never clobbered."""
+    incus.exec_in(instance, ["mkdir", "-p", "/etc/mise"], user="root")
+    incus.push_text(instance, MISE_SYSTEM_CONFIG, render_mise_config(tools),
+                    mode="0644", uid=0, gid=0)
+
+
 def render_instance_cloud_init(instance: str, guest_user: str, pubkey: str) -> str:
     return (
         "#cloud-config\n"
@@ -166,6 +201,8 @@ def write_guest_env(incus: Incus, instance: str, cfg: dict, manifest_env: dict) 
     guest_user = cfg["guest_user"]
     env = {**cfg["harness_env"], **cfg["defaults"]["env"], **manifest_env}
     incus.push_text(instance, "/etc/profile.d/asbx-env.sh", render_env_file(env),
+                    mode="0644", uid=0, gid=0)
+    incus.push_text(instance, "/etc/environment", render_etc_environment(guest_user),
                     mode="0644", uid=0, gid=0)
 
     claude_settings = json.dumps({"env": {**cfg["harness_env"], **manifest_env}}, indent=2) + "\n"

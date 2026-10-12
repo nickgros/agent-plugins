@@ -73,6 +73,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "env": {},
         "git": {"name": "", "email": ""},
         "remotes": {},
+        # mise tool -> version for every sandbox, e.g. {maven: "3.9"}. A manifest's tools wins per tool.
+        "tools": {},
     },
     "aws": {
         # Host profiles whose short-lived credentials may be pushed into
@@ -97,7 +99,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 
 # User-keyed maps: any key is valid under these, not just the default ones.
-OPEN_MAPS = frozenset({"defaults.env", "defaults.remotes", "harness_env"})
+OPEN_MAPS = frozenset({"defaults.env", "defaults.remotes", "defaults.tools", "harness_env"})
 
 
 def deep_merge(base: dict, override: dict, path: str = "") -> dict:
@@ -127,6 +129,27 @@ def normalize_env(env: dict, where: str) -> dict[str, str]:
             out[str(k)] = str(v)
         else:
             raise AsbxError(f"{where}.{k}: env values must be scalars, got {type(v).__name__}")
+    return out
+
+
+def normalize_tools(tools: Any, where: str) -> dict[str, str]:
+    """mise tool name -> version. YAML parses `java: 21` as an int, which is
+    exact. A float is not (`python: 3.10` loads as 3.1), so versions with a dot
+    must be quoted strings."""
+    if not isinstance(tools, dict):
+        raise AsbxError(f"{where} must be a mapping of mise tool name to version")
+    out: dict[str, str] = {}
+    for k, v in tools.items():
+        if not isinstance(k, str) or not k:
+            raise AsbxError(f"{where}: tool names must be non-empty strings")
+        if isinstance(v, int) and not isinstance(v, bool):
+            out[k] = str(v)
+        elif isinstance(v, str) and v.strip():
+            out[k] = v
+        elif isinstance(v, float):
+            raise AsbxError(f"{where}.{k}: quote the version (YAML reads {v!r} as a number and drops trailing zeros)")
+        else:
+            raise AsbxError(f"{where}.{k}: tool versions must be non-empty strings or integers")
     return out
 
 
@@ -223,6 +246,7 @@ def load_config() -> dict[str, Any]:
         raw = yaml.safe_load(f) or {}
     cfg = deep_merge(DEFAULT_CONFIG, raw)
     cfg["defaults"]["env"] = normalize_env(cfg["defaults"]["env"], "defaults.env")
+    cfg["defaults"]["tools"] = normalize_tools(cfg["defaults"]["tools"], "defaults.tools")
     cfg["harness_env"] = normalize_env(cfg["harness_env"], "harness_env")
     if not is_aws_profile_list(cfg["aws"]["profiles"]):
         raise AsbxError(f"config {config_path()}: 'aws.profiles' must be {AWS_PROFILES_RULE}")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from . import ui
+from . import guest, ui
 from .errors import AsbxError
 from .incus import Incus
 from .manifest import Manifest, Repo, manifest_sha256, resolve_remote_url
@@ -33,10 +33,29 @@ def configure_repo_remotes(incus: Incus, instance: str, guest_user: str, workdir
             )
 
 
+def _mise_install(incus: Incus, instance: str, guest_user: str, cwd: str, label: str,
+                  env: dict[str, str]) -> None:
+    """Installs the tools mise resolves for `cwd` so nothing installs lazily on
+    first use. An already-installed toolset is a fast no-op."""
+    ui.ok(f"{label}: mise install")
+    proc = incus.exec_in(instance, ["mise", "install", "--yes"], user=guest_user, cwd=cwd,
+                         env=env, check=False)
+    if proc.returncode != 0:
+        detail = (proc.stderr or "").strip()
+        raise AsbxError(f"provision failed: {label}: mise install exited {proc.returncode}"
+                        + (f"\n{detail}" if detail else ""))
+
+
 def run_provision(incus: Incus, instance: str, manifest: Manifest, guest_user: str) -> None:
     home = f"/home/{guest_user}"
     incus.exec_in(instance, ["mkdir", "-p", "/workspace", f"{home}/.asbx"], user=guest_user)
     guest_uid = incus.uid_of(instance, guest_user)
+
+    guest.write_mise_config(incus, instance, manifest.tools)
+    # mise install in a repo also installs the system-config tools, so the
+    # workspace-level run is only needed when there is no repo to carry it.
+    if not manifest.repos:
+        _mise_install(incus, instance, guest_user, "/workspace", "tools", manifest.env)
 
     for repo in manifest.repos:
         workdir = f"/workspace/{repo.dir}"
@@ -57,6 +76,7 @@ def run_provision(incus: Incus, instance: str, manifest: Manifest, guest_user: s
                 raise AsbxError(f"provision failed: repo {repo.dir}: clone exited {proc.returncode}")
 
         configure_repo_remotes(incus, instance, guest_user, workdir, repo)
+        _mise_install(incus, instance, guest_user, workdir, f"repo {repo.dir}", manifest.env)
 
         # Repo setup is a first-clone step, not a per-provision one: it is the
         # manifest's `setup:` hook that is documented as re-running every time.
@@ -84,7 +104,7 @@ def run_provision(incus: Incus, instance: str, manifest: Manifest, guest_user: s
         remote_path = f"{home}/.asbx/provision.sh"
         incus.file_push(instance, manifest.setup_path, remote_path, mode="0755",
                          uid=guest_uid, gid=guest_uid)
-        proc = incus.exec_in(instance, ["bash", remote_path], user=guest_user,
+        proc = incus.exec_in(instance, ["bash", "-l", remote_path], user=guest_user,
                               cwd="/workspace", env=manifest.env, check=False)
         if proc.returncode != 0:
             raise AsbxError(f"provision failed: setup hook exited {proc.returncode}")

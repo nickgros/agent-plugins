@@ -48,12 +48,10 @@ def test_resolve_node_download_falls_back_when_tarball_sha_is_absent():
     assert sha256 == baseimage.NODE_PINNED_SHA256
 
 
-def test_render_base_cloud_init_installs_omp_for_guest_user_and_puts_it_on_path():
+def test_render_base_cloud_init_installs_omp_for_guest_user():
     rendered = baseimage.render_base_cloud_init("dev", "https://example.invalid/node.tar.xz", "abc")
     assert "runuser -u dev -- env HOME=/home/dev sh -c" in rendered
     assert "can1357/oh-my-pi/main/scripts/install.sh" in rendered
-    path_line = next(line for line in rendered.splitlines() if "/etc/environment" in line)
-    assert "PATH=\"/home/dev/.local/bin:" in path_line
 
 
 def test_copy_host_binaries_pushes_into_guest_local_bin_owned_by_guest(tmp_path):

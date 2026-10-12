@@ -114,3 +114,79 @@ def test_run_provision_records_manifest_sha256_on_success(tmp_path):
 
     assert ["config", "set", "sandbox-demo", "user.asbx.manifest_sha256",
             provision.manifest_sha256(manifest.path)] in fake.calls
+
+
+def _calls(fake):
+    return [" ".join(c) for c in fake.calls]
+
+
+def test_repo_setup_runs_after_mise_install_in_the_repo(tmp_path):
+    repo = Repo(url="https://github.com/x/y.git", dir="y", ref=None, setup="make", remotes={})
+    fake = FakeIncus()
+    fake.stub("test", "-d", rc=1)
+
+    provision.run_provision(fake, "sandbox-demo", _manifest(tmp_path, repos=[repo]), "agent")
+
+    joined = _calls(fake)
+    install = next(i for i, c in enumerate(joined) if "cd /workspace/y" in c and "mise install --yes" in c)
+    setup = next(i for i, c in enumerate(joined) if "cd /workspace/y" in c and "bash -lc make" in c)
+    assert install < setup
+
+
+def test_mise_config_is_written_before_any_mise_install(tmp_path):
+    repo = Repo(url="https://github.com/x/y.git", dir="y", ref=None, setup=None, remotes={})
+    fake = FakeIncus()
+
+    provision.run_provision(fake, "sandbox-demo", _manifest(tmp_path, repos=[repo]), "agent")
+
+    joined = _calls(fake)
+    push = next(i for i, c in enumerate(joined) if c.startswith("file push") and "/etc/mise/config.toml" in c)
+    first_install = next(i for i, c in enumerate(joined) if "mise install --yes" in c)
+    assert push < first_install
+
+
+def test_workspace_mise_install_runs_only_when_there_are_no_repos(tmp_path):
+    fake = FakeIncus()
+    provision.run_provision(fake, "sandbox-demo", _manifest(tmp_path), "agent")
+    assert sum("cd /workspace &&" in c and "mise install --yes" in c for c in _calls(fake)) == 1
+
+    repo = Repo(url="https://github.com/x/y.git", dir="y", ref=None, setup=None, remotes={})
+    fake = FakeIncus()
+    provision.run_provision(fake, "sandbox-demo", _manifest(tmp_path, repos=[repo]), "agent")
+    assert not any("cd /workspace &&" in c and "mise install --yes" in c for c in _calls(fake))
+
+
+def test_mise_install_failure_in_a_repo_names_the_repo_and_carries_stderr(tmp_path):
+    repo = Repo(url="https://github.com/x/y.git", dir="y", ref=None, setup=None, remotes={})
+    fake = FakeIncus()
+    fake.stub("mise", "install", rc=1, stderr="boom")
+
+    with pytest.raises(AsbxError, match="repo y: mise install exited 1\nboom"):
+        provision.run_provision(fake, "sandbox-demo", _manifest(tmp_path, repos=[repo]), "agent")
+
+
+def test_mise_install_failure_without_repos_is_labelled_tools(tmp_path):
+    fake = FakeIncus()
+    fake.stub("mise", "install", rc=1, stderr="boom")
+
+    with pytest.raises(AsbxError, match="tools: mise install exited 1"):
+        provision.run_provision(fake, "sandbox-demo", _manifest(tmp_path), "agent")
+
+
+def test_mise_install_receives_the_manifest_env(tmp_path):
+    fake = FakeIncus()
+
+    provision.run_provision(fake, "sandbox-demo", _manifest(tmp_path, env={"GITHUB_TOKEN": "t0k"}), "agent")
+
+    install = next(c for c in _calls(fake) if "mise install --yes" in c)
+    assert "GITHUB_TOKEN=t0k" in install
+
+
+def test_setup_hook_runs_as_a_login_shell(tmp_path):
+    hook = tmp_path / "hook.sh"
+    hook.write_text("true\n")
+    fake = FakeIncus()
+
+    provision.run_provision(fake, "sandbox-demo", _manifest(tmp_path, setup_path=str(hook)), "agent")
+
+    assert any("bash -l /home/agent/.asbx/provision.sh" in c for c in _calls(fake))
