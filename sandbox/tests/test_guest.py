@@ -193,17 +193,19 @@ def test_write_guest_env_pushes_profile_script_and_claude_settings_with_manifest
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(shutil.which("script") is None, reason="needs util-linux script(1) for a tty")
-@pytest.mark.parametrize("ssh, tty, start_in_home, lands_in_workspace", [
-    (True, True, True, True),
-    (True, False, True, False),    # `ssh host cmd`, scp, VSCode's bootstrap
-    (False, True, True, False),    # `incus exec` shells
-    (True, True, False, False),    # a login that already chose its directory
+@pytest.mark.parametrize("ssh, tty, start_in_home, has_workspace, lands_in_workspace", [
+    (True, True, True, True, True),
+    (True, False, True, True, False),    # `ssh host cmd`, scp, VSCode's bootstrap
+    (False, True, True, True, False),    # `incus exec` shells
+    (True, True, False, True, False),    # a login that already chose its directory
+    (True, True, True, False, False),    # nothing provisioned yet
 ])
 def test_workspace_cd_moves_only_interactive_ssh_logins_from_home(
-        tmp_path, ssh, tty, start_in_home, lands_in_workspace):
+        tmp_path, ssh, tty, start_in_home, has_workspace, lands_in_workspace):
     home, workspace = tmp_path / "home", tmp_path / "workspace"
     home.mkdir()
-    workspace.mkdir()
+    if has_workspace:
+        workspace.mkdir()
     script = tmp_path / "asbx-cwd.sh"
     script.write_text(guest.render_workspace_cd(str(workspace)))
     env = {"PATH": os.environ["PATH"], "HOME": str(home)}

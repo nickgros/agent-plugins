@@ -235,7 +235,7 @@ def render_zprofile() -> str:
     """Debian's zsh never sources /etc/profile.d; mirror what bash login shells get there."""
     return ("# managed by asbx: rewritten on every 'asbx up'\n"
             "[[ -r /etc/profile.d/asbx-env.sh ]] && emulate sh -c '. /etc/profile.d/asbx-env.sh'\n"
-            "[[ -r /etc/profile.d/asbx-cwd.sh ]] && emulate sh -c '. /etc/profile.d/asbx-cwd.sh'\n"
+            f"[[ -r {WORKSPACE_CD_PATH} ]] && emulate sh -c '. {WORKSPACE_CD_PATH}'\n"
             '[[ -x /usr/local/bin/mise ]] && eval "$(/usr/local/bin/mise activate zsh)"\n')
 
 

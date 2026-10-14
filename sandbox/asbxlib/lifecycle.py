@@ -84,7 +84,7 @@ def cmd_shell(incus: Incus, cfg: dict, group: str, root: bool) -> None:
 def cmd_start(incus: Incus, cfg: dict, group: str) -> None:
     manifest = manifest_mod.load_manifest(group, cfg)
     incus.run("start", manifest.instance)
-    _wait_for_ssh(incus, cfg, manifest.instance)
+    _wait_for_ssh(cfg, manifest.instance)
     ui.ok(f"started {manifest.instance}")
 
 
@@ -94,10 +94,10 @@ def cmd_stop(incus: Incus, cfg: dict, group: str) -> None:
     ui.ok(f"stopped {manifest.instance}")
 
 
-def _wait_for_ssh(incus: Incus, cfg: dict, instance: str) -> None:
+def _wait_for_ssh(cfg: dict, instance: str) -> None:
     """`incus start/restart` return at power-on; sshd and the bridge DNS entry
-    come up later, so a prompt `asbx ssh` would hit 'No route to host'."""
-    guest.wait_for_agent(incus, instance)
+    come up later, so a prompt `asbx ssh` would hit 'No route to host'. The
+    instance did start, so a port that never answers is a warning, not a failure."""
     hostname = sshconf.instance_hostname(instance, cfg)
     if not host.wait_for_port(hostname, 22):
         ui.warn(f"{hostname}:22 not reachable yet; run 'asbx doctor'")
@@ -106,7 +106,7 @@ def _wait_for_ssh(incus: Incus, cfg: dict, instance: str) -> None:
 def cmd_restart(incus: Incus, cfg: dict, group: str) -> None:
     manifest = manifest_mod.load_manifest(group, cfg)
     incus.run("restart", manifest.instance)
-    _wait_for_ssh(incus, cfg, manifest.instance)
+    _wait_for_ssh(cfg, manifest.instance)
     ui.ok(f"restarted {manifest.instance}")
 
 
