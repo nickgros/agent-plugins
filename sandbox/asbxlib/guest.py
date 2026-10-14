@@ -198,10 +198,25 @@ def sync_authorized_keys(incus: Incus, instance: str, cfg: dict) -> None:
     incus.push_text(instance, f"{ssh_dir}/authorized_keys", body, mode="0600", uid=uid, gid=uid)
 
 
+WORKSPACE_CD_PATH = "/etc/profile.d/asbx-cwd.sh"
+
+
+def render_workspace_cd(workspace: str = "/workspace") -> str:
+    """Interactive ssh logins start in /workspace instead of $HOME. Gated on a
+    tty so `ssh host cmd`, scp and VSCode's server bootstrap are untouched, and
+    on SSH_CONNECTION so `incus exec` shells and the provision hook are too."""
+    return ("# managed by asbx: rewritten on every 'asbx up'\n"
+            f'if [ -n "$SSH_CONNECTION" ] && [ -t 0 ] && [ "$PWD" = "$HOME" ] && [ -d {workspace} ]; then\n'
+            f"    cd {workspace}\n"
+            "fi\n")
+
+
 def write_guest_env(incus: Incus, instance: str, cfg: dict, manifest_env: dict) -> None:
     guest_user = cfg["guest_user"]
     env = {**cfg["harness_env"], **cfg["defaults"]["env"], **manifest_env}
     incus.push_text(instance, "/etc/profile.d/asbx-env.sh", render_env_file(env),
+                    mode="0644", uid=0, gid=0)
+    incus.push_text(instance, WORKSPACE_CD_PATH, render_workspace_cd(),
                     mode="0644", uid=0, gid=0)
     incus.push_text(instance, "/etc/environment", render_etc_environment(guest_user),
                     mode="0644", uid=0, gid=0)
@@ -220,6 +235,7 @@ def render_zprofile() -> str:
     """Debian's zsh never sources /etc/profile.d; mirror what bash login shells get there."""
     return ("# managed by asbx: rewritten on every 'asbx up'\n"
             "[[ -r /etc/profile.d/asbx-env.sh ]] && emulate sh -c '. /etc/profile.d/asbx-env.sh'\n"
+            "[[ -r /etc/profile.d/asbx-cwd.sh ]] && emulate sh -c '. /etc/profile.d/asbx-cwd.sh'\n"
             '[[ -x /usr/local/bin/mise ]] && eval "$(/usr/local/bin/mise activate zsh)"\n')
 
 

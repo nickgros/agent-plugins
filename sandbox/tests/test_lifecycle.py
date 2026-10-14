@@ -257,3 +257,20 @@ def test_cmd_shell_runs_the_configured_login_shell_and_root_keeps_bash(
     lifecycle.cmd_shell(fake, cfg, "demo", root=root)
 
     assert f"{expected} -l" in " ".join(fake.calls[-1])
+
+
+@pytest.mark.parametrize("command", ["start", "restart"])
+@pytest.mark.parametrize("reachable", [True, False])
+def test_start_and_restart_wait_for_ssh_and_only_warn_when_it_never_answers(
+        monkeypatch, cfg, capsys, command, reachable):
+    monkeypatch.setattr(lifecycle.manifest_mod, "load_manifest", lambda group, cfg: _fake_manifest())
+    order: list[str] = []
+    monkeypatch.setattr(lifecycle.guest, "wait_for_agent", lambda incus, instance: order.append("agent"))
+    monkeypatch.setattr(lifecycle.host, "wait_for_port", lambda name, port: order.append(f"{name}:{port}") or reachable)
+    fake = FakeIncus()
+
+    getattr(lifecycle, f"cmd_{command}")(fake, cfg, "demo")
+
+    assert [command, "sandbox-demo"] in fake.calls
+    assert order == ["agent", "sandbox-demo.incus:22"]
+    assert ("not reachable yet" in capsys.readouterr().err) is not reachable

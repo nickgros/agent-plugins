@@ -15,6 +15,10 @@ dedicated `known_hosts`.
   `/workspace` as the project root. Gateway reads `~/.ssh/config` the same
   way.
 
+An interactive SSH login starts in `/workspace` instead of the home
+directory. `ssh <host> <cmd>`, scp and IDE server bootstraps have no
+terminal and keep starting in the home directory.
+
 `asbx shell <group>` is an `incus exec` shell, for when SSH is broken.
 
 ## From another machine

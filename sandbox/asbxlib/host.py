@@ -9,6 +9,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn, Optional
@@ -160,6 +161,19 @@ def resolves(name: str) -> bool:
     except socket.gaierror:
         return False
     return True
+
+
+def wait_for_port(name: str, port: int, timeout: float = 120.0, interval: float = 1.0) -> bool:
+    """True once a TCP connection to `name:port` succeeds, False on timeout."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with socket.create_connection((name, port), timeout=3):
+                return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(interval)
 
 
 def forget_host_key(known_hosts: Path, hostname: str) -> None:

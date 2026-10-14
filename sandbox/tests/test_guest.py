@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 
 import pytest
@@ -185,6 +186,37 @@ def test_write_guest_env_pushes_profile_script_and_claude_settings_with_manifest
 
     # Shims before ~/.local/bin before /usr/local/bin: repo pins must beat the base Node.
     assert 'PATH="/home/agent/.local/share/mise/shims:/home/agent/.local/bin:/usr/local/bin:' in fake.pushed["/etc/environment"]
+
+
+# ---------------------------------------------------------------------------
+# render_workspace_cd — only interactive ssh logins move to /workspace
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(shutil.which("script") is None, reason="needs util-linux script(1) for a tty")
+@pytest.mark.parametrize("ssh, tty, start_in_home, lands_in_workspace", [
+    (True, True, True, True),
+    (True, False, True, False),    # `ssh host cmd`, scp, VSCode's bootstrap
+    (False, True, True, False),    # `incus exec` shells
+    (True, True, False, False),    # a login that already chose its directory
+])
+def test_workspace_cd_moves_only_interactive_ssh_logins_from_home(
+        tmp_path, ssh, tty, start_in_home, lands_in_workspace):
+    home, workspace = tmp_path / "home", tmp_path / "workspace"
+    home.mkdir()
+    workspace.mkdir()
+    script = tmp_path / "asbx-cwd.sh"
+    script.write_text(guest.render_workspace_cd(str(workspace)))
+    env = {"PATH": os.environ["PATH"], "HOME": str(home)}
+    if ssh:
+        env["SSH_CONNECTION"] = "10.0.0.2 5000 10.0.0.3 22"
+    start = home if start_in_home else tmp_path
+    inner = f'cd {start} && PWD={start} && . {script} && pwd'
+    argv = ["script", "-qec", f"sh -c '{inner}'", "/dev/null"] if tty else ["sh", "-c", inner]
+
+    out = subprocess.run(argv, env=env, stdin=None if tty else subprocess.DEVNULL,
+                         capture_output=True, text=True, check=True).stdout
+
+    assert out.strip().splitlines()[-1] == str(workspace if lands_in_workspace else start)
 
 
 # ---------------------------------------------------------------------------

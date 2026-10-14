@@ -50,7 +50,10 @@ satisfied. `provision` does the following:
 
 ### `start` / `stop` / `restart <group>`
 
-Thin wrappers over the matching `incus` command.
+Thin wrappers over the matching `incus` command. `start` and `restart` then
+wait, for up to two minutes, until `<instance>.incus:22` accepts a
+connection, so an `asbx ssh` straight after doesn't hit "No route to host".
+If it never does, they warn and suggest `asbx doctor`.
 
 ### `rebuild <group> [--force] [--yes]`
 
