@@ -137,3 +137,26 @@ def test_cmd_up_pins_a_rebuilt_sandbox_s_previous_address_before_its_first_start
     up.cmd_up(fake, cfg, "demo", no_auth=True, no_provision=True, ipv4="10.210.86.50")
 
     assert pins[0] == ("10.210.86.50", False)
+
+
+def test_cmd_up_pins_an_existing_sandbox_after_its_acl_is_in_place(up_env, cfg, monkeypatch):
+    fake = _existing_instance(cfg, egress_mode="")
+    seen: list[bool] = []
+    monkeypatch.setattr(up.netacl, "pin_nic", lambda incus, instance, cfg, address=None: seen.append(
+        ["config", "set", "sandbox-demo", "user.asbx.egress_mode", "acl"] in fake.calls) or "10.210.86.192")
+
+    up.cmd_up(fake, cfg, "demo", no_auth=True, no_provision=True)
+
+    assert seen == [True]
+
+
+def test_cmd_up_stops_when_the_nic_cannot_be_pinned(up_env, cfg, monkeypatch):
+    def refuse(*a, **k):
+        raise AsbxError("could not pin")
+    monkeypatch.setattr(up.netacl, "pin_nic", refuse)
+    synced: list[str] = []
+    monkeypatch.setattr(up.guest, "sync_authorized_keys", lambda *a: synced.append("keys"))
+
+    with pytest.raises(AsbxError, match="could not pin"):
+        up.cmd_up(_existing_instance(cfg, egress_mode="acl"), cfg, "demo", no_auth=True, no_provision=True)
+    assert synced == []

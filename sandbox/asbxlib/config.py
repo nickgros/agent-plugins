@@ -369,13 +369,7 @@ def set_config_value(keys: tuple[str, ...], value: Any) -> None:
         raise AsbxError(f"{path} has comments, which rewriting it would lose; "
                         f"add this yourself, then re-run:\n{snippet}")
     raw = yaml.safe_load(text) or {}
-    node = raw
-    for k in keys[:-1]:
-        child = node.get(k)
-        if not isinstance(child, dict):
-            child = node[k] = {}
-        node = child
-    node[keys[-1]] = value
+    set_in(raw, keys, value)
     host.write_private_text(path, yaml.safe_dump(raw, sort_keys=False))
 
 
@@ -384,6 +378,16 @@ def nest(keys: tuple[str, ...], value: Any) -> dict:
     for k in reversed(keys):
         value = {k: value}
     return value
+
+
+def set_in(mapping: dict, keys: tuple[str, ...], value: Any) -> None:
+    """mapping[k0][k1]... = value, creating (or replacing non-mapping) parents."""
+    node = mapping
+    for k in keys[:-1]:
+        if not isinstance(node.get(k), dict):
+            node[k] = {}
+        node = node[k]
+    node[keys[-1]] = value
 
 
 def expand(p: str) -> Path:

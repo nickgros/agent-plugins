@@ -248,6 +248,8 @@ def _leases_fake(eth0: dict, hwaddr: str = "10:66:6A:BA:78:4F") -> FakeIncus:
         '[{"hostname":"sandbox-demo","hwaddr":"10:66:6a:ba:78:4f","address":"fd42::5","type":"dynamic"},'
         # A guest-chosen DHCP hostname must not matter: matching is by Incus's MAC.
         ' {"hostname":"sandbox-demo","hwaddr":"10:66:6a:00:00:01","address":"10.210.86.7","type":"dynamic"},'
+        ' {"hostname":"other","hwaddr":"10:66:6a:ba:78:4f","address":"10.210.86.1","type":"gateway"},'
+        ' {"hostname":"other","hwaddr":"10:66:6a:ba:78:4f","address":"10.9.9.9","type":"dynamic"},'
         ' {"hostname":"other","hwaddr":"10:66:6a:ba:78:4f","address":"10.210.86.192","type":"dynamic"}]'))
     return fake
 
@@ -270,8 +272,11 @@ def test_pin_nic_leaves_an_already_pinned_and_filtered_nic_alone():
 
 def test_pin_nic_keeps_an_address_set_without_filtering_and_adds_the_filters():
     fake = _leases_fake({"ipv4.address": "10.210.86.50"})
+    fake.stub("device", "override", rc=1, stderr="The device already exists")
 
     assert netacl.pin_nic(fake, "sandbox-demo", _acl_cfg(), address="10.210.86.99") == "10.210.86.50"
+    assert ["config", "device", "set", "sandbox-demo", "eth0", "ipv4.address=10.210.86.50",
+            "security.ipv4_filtering=true", "security.mac_filtering=true"] in fake.calls
 
 
 def test_pin_nic_uses_the_given_address_before_the_first_start():

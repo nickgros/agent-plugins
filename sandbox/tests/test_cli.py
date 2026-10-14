@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from asbxlib import cli
 
 
@@ -15,6 +17,15 @@ def test_settings_sync_command_is_registered_with_an_optional_group():
 
     assert parser.parse_args(["settings-sync"]).group is None
     assert parser.parse_args(["settings-sync", "demo"]).group == "demo"
+
+
+def test_ssh_config_takes_exactly_one_of_jump_or_direct(capsys):
+    parser = cli.build_parser()
+
+    assert parser.parse_args(["ssh-config", "demo", "--direct"]).direct is True
+    for argv in (["ssh-config", "demo"], ["ssh-config", "demo", "--direct", "--jump", "me@host"]):
+        with pytest.raises(SystemExit):
+            parser.parse_args(argv)
 
 
 def test_settings_sync_unknown_group_reports_missing_manifest(config_root, capsys):

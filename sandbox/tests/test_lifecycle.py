@@ -143,6 +143,39 @@ def test_cmd_snapshot_refuses_a_label_that_already_exists(monkeypatch, cfg, conf
     assert not any(c[:2] == ["snapshot", "create"] or c[:1] == ["copy"] for c in fake.calls)
 
 
+def test_cmd_snapshot_copy_fallback_drops_the_pin_from_the_copy(monkeypatch, cfg, config_root):
+    # Incus won't start a NIC whose static IPv4 another NIC has, stopped or not.
+    (config_root / "demo.yaml").write_text("")
+    fake = FakeIncus()
+    fake.set_snapshots([])
+    fake.set_instance(exists=True, state="Stopped")
+    fake.stub("snapshot", "create", rc=1, stderr="not supported")
+
+    lifecycle.cmd_snapshot(fake, cfg, "demo", "pre1")
+
+    copy_name = lifecycle._snapshot_copy_name("sandbox-demo", "pre1")
+    assert ["config", "device", "unset", copy_name, "eth0", "ipv4.address"] in fake.calls
+
+
+def test_cmd_restore_from_a_copy_puts_the_pinned_address_back_before_starting(monkeypatch, cfg, tmp_path):
+    monkeypatch.setattr(lifecycle.manifest_mod, "load_manifest", lambda group, cfg: _fake_manifest())
+    monkeypatch.setattr(lifecycle.guest, "wait_for_agent", lambda *a, **k: None)
+    cfg["ssh"]["config_dir"] = str(tmp_path / "confs")
+    cfg["ssh"]["known_hosts"] = str(tmp_path / "known_hosts")
+    fake = FakeIncus()
+    fake.set_snapshots([])
+    fake.set_instance(exists=True)
+    fake.set_devices({"eth0": {"ipv4.address": "10.210.86.192", "security.ipv4_filtering": "true",
+                               "security.mac_filtering": "true"}})
+    pins: list[tuple] = []
+    monkeypatch.setattr(lifecycle.netacl, "pin_nic", lambda incus, instance, cfg, address=None: pins.append(
+        (address, ["start", "sandbox-demo"] in fake.calls)))
+
+    lifecycle.cmd_restore(fake, cfg, "demo", "pre1", yes=True)
+
+    assert pins == [("10.210.86.192", False)]
+
+
 def _clean_pushed_fake(ls: str, found: str) -> FakeIncus:
     fake = FakeIncus()
     fake.set_instance(exists=True)

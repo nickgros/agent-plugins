@@ -6,9 +6,8 @@ from __future__ import annotations
 
 import copy
 import ipaddress
-import shutil
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import yaml
 
@@ -16,6 +15,7 @@ from .errors import AsbxError
 from .incus import Incus
 from . import config
 from . import host
+from . import netacl
 from . import ui
 
 FIREWALL_PATH = "/etc/asbx/firewall.nft"
@@ -185,7 +185,12 @@ def render_client(cfg: dict, name: str, host_public_key: str, bridge_subnet: str
 
 
 def nft_path() -> str:
-    return shutil.which("nft") or "/usr/sbin/nft"
+    """The `nft` root runs at boot. Never resolved from the user's PATH: a
+    user-writable `nft` there would run as root on every boot."""
+    path = host.system_binary("nft")
+    if not path:
+        raise AsbxError("no root-owned `nft` in /usr/sbin, /sbin, /usr/bin or /bin; install nftables")
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -198,17 +203,25 @@ def firewall_installed_matches(cfg: dict) -> bool:
     return host.read_text(FIREWALL_PATH) == render_firewall(cfg)
 
 
+def unit_active(unit: str) -> bool:
+    return host.systemctl_system("is-active", unit).returncode == 0
+
+
 def firewall_unit_active() -> bool:
-    return host.systemctl_system("is-active", UNIT_NAME).returncode == 0
+    return unit_active(UNIT_NAME)
 
 
-def require_firewall(cfg: dict) -> None:
-    """Raises unless the ingress firewall is in force for the current config."""
+def _require_eligible(cfg: dict) -> None:
     problems = interface_problems(cfg)
     if problems:
         detail = "; ".join(f"{n} {why}" for n, why in problems.items())
         raise AsbxError(f"ineligible ingress interface: {detail}; fix network.ingress in "
                         f"{config.config_path()} (see docs/security.md)")
+
+
+def require_firewall(cfg: dict) -> None:
+    """Raises unless the ingress firewall is in force for the current config."""
+    _require_eligible(cfg)
     if not firewall_installed_matches(cfg):
         raise AsbxError(f"{FIREWALL_PATH} is missing or out of date for this config; "
                         "run 'asbx ingress setup' to install the ingress firewall")
@@ -230,51 +243,73 @@ def _require_wireguard_tools() -> None:
 
 
 def _host_private_key(create: bool) -> Optional[str]:
+    """The host's WireGuard key. It lands in a file wg-quick runs as root, so
+    anything but a single key line is refused (it could carry PostUp lines)."""
     path = wireguard_key_path()
     if path.exists():
-        return path.read_text().strip()
-    if not create:
+        key = path.read_text().strip()
+    elif create:
+        key = host.wg_genkey()
+        host.write_private_text(path, key + "\n")
+        ui.ok(f"generated {path}")
+    else:
         return None
-    key = host.wg_genkey()
-    host.write_private_text(path, key + "\n")
-    ui.ok(f"generated {path}")
+    if not config.WG_KEY_RE.fullmatch(key):
+        raise AsbxError(f"{path} is not a WireGuard private key (`wg genkey` output)")
     return key
+
+
+class PlannedFile(NamedTuple):
+    path: str
+    shown: str              # printed; never holds the host key
+    mode: str
+    secret: Optional[str]   # installed instead of `shown` when set
+
+
+class InstallPlan(NamedTuple):
+    files: list[PlannedFile]
+    commands: list[list[str]]
+
+
+def plan_install(cfg: dict, nft: str, host_key: Optional[str]) -> InstallPlan:
+    """What `install` writes and runs as root. With no `host_key` the managed
+    WireGuard file carries only a placeholder (print-only)."""
+    files = [PlannedFile(FIREWALL_PATH, render_firewall(cfg), "0644", None),
+             PlannedFile(UNIT_PATH, render_unit(nft), "0644", None)]
+    commands = [["systemctl", "daemon-reload"],
+                ["systemctl", "enable", UNIT_NAME],
+                ["systemctl", "restart", UNIT_NAME]]
+    managed = managed_interface(cfg)
+    if managed:
+        files.append(PlannedFile(f"/etc/wireguard/{managed}.conf", render_wireguard(cfg, _key_placeholder()),
+                                 "0600", host_key and render_wireguard(cfg, host_key)))
+        commands += [["systemctl", "enable", f"wg-quick@{managed}"],
+                     ["systemctl", "restart", f"wg-quick@{managed}"]]
+    return InstallPlan(files, commands)
 
 
 def install(cfg: dict, yes: bool, print_only: bool) -> None:
     """Installs the firewall table and unit, plus the managed WireGuard config
     when enabled, through sudo after showing them. `print_only` changes nothing."""
-    problems = interface_problems(cfg)
-    if problems:
-        raise AsbxError("refusing ineligible ingress interfaces: "
-                        + "; ".join(f"{n} {why}" for n, why in problems.items()))
-    managed = managed_interface(cfg)
-    files = [(FIREWALL_PATH, render_firewall(cfg), "0644", None),
-             (UNIT_PATH, render_unit(nft_path()), "0644", None)]
-    commands = [["systemctl", "daemon-reload"],
-                ["systemctl", "enable", UNIT_NAME],
-                ["systemctl", "restart", UNIT_NAME]]
-    if managed:
-        if not print_only:
-            _require_wireguard_tools()
-        key = None if print_only else _host_private_key(create=True)
-        files.append((f"/etc/wireguard/{managed}.conf", render_wireguard(cfg, _key_placeholder()), "0600",
-                      key and render_wireguard(cfg, key)))
-        commands += [["systemctl", "enable", f"wg-quick@{managed}"],
-                     ["systemctl", "restart", f"wg-quick@{managed}"]]
+    _require_eligible(cfg)
+    host_key = None
+    if managed_interface(cfg) and not print_only:
+        _require_wireguard_tools()
+        host_key = _host_private_key(create=True)
+    plan = plan_install(cfg, nft_path(), host_key)
 
-    for path, shown, mode, _secret in files:
-        print(f"# --- {path} (mode {mode}) ---\n{shown}")
+    for f in plan.files:
+        print(f"# --- {f.path} (mode {f.mode}) ---\n{f.shown}")
     print("# --- then, as root ---")
-    for argv in commands:
+    for argv in plan.commands:
         print(" ".join(argv))
     if print_only:
         return
     if not yes and not ui.confirm("install these as root with sudo? [y/N] "):
         raise AsbxError("aborted; 'asbx up' refuses to run until the ingress firewall is installed")
-    for path, shown, mode, secret in files:
-        host.sudo_install_file(path, secret or shown, mode)
-    for argv in commands:
+    for f in plan.files:
+        host.sudo_install_file(f.path, f.secret or f.shown, f.mode)
+    for argv in plan.commands:
         host.sudo(argv)
     ui.ok(f"ingress firewall active ({', '.join(ingress_interfaces(cfg)) or 'no ingress interfaces'})")
 
@@ -282,9 +317,6 @@ def install(cfg: dict, yes: bool, print_only: bool) -> None:
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
-
-def _bridge_subnet(incus: Incus, cfg: dict) -> ipaddress.IPv4Network:
-    return ipaddress.IPv4Interface(incus.network_get(cfg["network"]["name"], "ipv4.address")).network
 
 
 def _set_ingress(cfg: dict, keys: tuple[str, ...], value, print_only: bool) -> dict:
@@ -298,10 +330,7 @@ def _set_ingress(cfg: dict, keys: tuple[str, ...], value, print_only: bool) -> d
     print(f"# --- add to {config.config_path()} ---\n"
           f"{yaml.safe_dump(config.nest(full_keys, value), sort_keys=False)}")
     cfg = copy.deepcopy(cfg)
-    node = cfg
-    for k in full_keys[:-1]:
-        node = node[k]
-    node[full_keys[-1]] = value
+    config.set_in(cfg, full_keys, value)
     return cfg
 
 
@@ -334,7 +363,7 @@ def cmd_ingress_setup(incus: Incus, cfg: dict, create: bool, adopt: Optional[str
             _require_wireguard_tools()
         wg = cfg["network"]["ingress"]["wireguard"]
         tunnel = ipaddress.IPv4Interface(wg["address"]).network
-        if tunnel.overlaps(_bridge_subnet(incus, cfg)):
+        if tunnel.overlaps(netacl.bridge_subnet(incus, cfg)):
             raise AsbxError(f"network.ingress.wireguard.address {wg['address']} overlaps the "
                             f"{cfg['network']['name']} subnet; pick another range")
         if not wg["enabled"]:
@@ -356,4 +385,4 @@ def cmd_client_config(incus: Incus, cfg: dict, name: str) -> None:
     key = _host_private_key(create=False)
     if key is None:
         raise AsbxError(f"no host WireGuard key at {wireguard_key_path()}; run 'asbx ingress setup --create'")
-    print(render_client(cfg, name, host.wg_pubkey(key), str(_bridge_subnet(incus, cfg))), end="")
+    print(render_client(cfg, name, host.wg_pubkey(key), str(netacl.bridge_subnet(incus, cfg))), end="")

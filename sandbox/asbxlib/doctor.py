@@ -127,8 +127,7 @@ def cmd_doctor(incus: Incus, cfg: Optional[dict], fix: bool) -> int:
           f"the inbound default-deny is not loaded at boot{fix_hint}")
     managed = ingress.managed_interface(cfg)
     if managed:
-        check(f"wg-quick@{managed} active",
-              host.systemctl_system("is-active", f"wg-quick@{managed}").returncode == 0,
+        check(f"wg-quick@{managed} active", ingress.unit_active(f"wg-quick@{managed}"),
               "managed WireGuard is enabled but not running; run 'asbx ingress setup'", warn_cond=True)
         check("network.ingress.wireguard.endpoint set", bool(cfg["network"]["ingress"]["wireguard"]["endpoint"]),
               "'asbx client-config' needs the host:port clients dial", warn_cond=True)

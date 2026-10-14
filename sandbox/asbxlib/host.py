@@ -20,6 +20,23 @@ def which(name: str) -> bool:
     return shutil.which(name) is not None
 
 
+SYSTEM_BIN_DIRS = ("/usr/sbin", "/sbin", "/usr/bin", "/bin")
+
+
+def system_binary(name: str) -> Optional[str]:
+    """`name` from a system bin dir, root-owned and writable by root alone,
+    for paths that root will run; the user's PATH is never consulted."""
+    for d in SYSTEM_BIN_DIRS:
+        path = os.path.join(d, name)
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        if st.st_uid == 0 and not st.st_mode & 0o022 and os.access(path, os.X_OK):
+            return path
+    return None
+
+
 def git_config_get(key: str) -> str:
     proc = subprocess.run(["git", "config", "--get", key], capture_output=True, text=True)
     return proc.stdout.strip()

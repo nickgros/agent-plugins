@@ -154,47 +154,83 @@ def test_require_firewall_refuses_an_ineligible_interface_even_if_installed(inst
 
 
 # ---------------------------------------------------------------------------
-# install
+# render_unit / plan_install (pure)
+# ---------------------------------------------------------------------------
+
+def test_render_unit_loads_the_table_before_incus_and_never_unloads_it():
+    unit = ingress.render_unit("/usr/sbin/nft")
+
+    assert "Before=network-pre.target incus.service incus-startup.service" in unit
+    assert f"ExecStart=/usr/sbin/nft -f {ingress.FIREWALL_PATH}" in unit
+    # Stopping the unit must not lift the default-deny.
+    assert "ExecStop" not in unit
+
+
+def test_plan_install_without_managed_wireguard_installs_only_the_firewall():
+    cfg = _cfg(interfaces=["tailscale0"])
+    plan = ingress.plan_install(cfg, "/usr/sbin/nft", None)
+
+    assert [f.path for f in plan.files] == [ingress.FIREWALL_PATH, ingress.UNIT_PATH]
+    assert plan.files[0].shown == ingress.render_firewall(cfg)
+    assert not any("wg-quick" in " ".join(c) for c in plan.commands)
+
+
+def test_plan_install_keeps_the_host_key_out_of_what_is_shown():
+    cfg = _cfg(managed=True, clients={"laptop": {"public_key": CLIENT_KEY, "address": "10.99.0.2"}})
+    wg = ingress.plan_install(cfg, "/usr/sbin/nft", HOST_KEY).files[-1]
+
+    assert (wg.path, wg.mode) == ("/etc/wireguard/asbx0.conf", "0600")
+    assert HOST_KEY not in wg.shown
+    assert f"PrivateKey = {HOST_KEY}" in wg.secret
+    assert f"PublicKey = {CLIENT_KEY}\nAllowedIPs = 10.99.0.2/32" in wg.secret
+    assert ["systemctl", "restart", "wg-quick@asbx0"] in ingress.plan_install(cfg, "nft", HOST_KEY).commands
+
+
+# ---------------------------------------------------------------------------
+# install (sudo shell)
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
 def sudo_log(monkeypatch, host_ifaces, config_root):
-    log: list = []
-    monkeypatch.setattr(ingress.host, "sudo_install_file", lambda dest, body, mode: log.append((dest, body, mode)))
-    monkeypatch.setattr(ingress.host, "sudo", lambda argv: log.append(argv))
+    log = {"files": {}, "commands": []}
+    monkeypatch.setattr(ingress.host, "sudo_install_file",
+                        lambda dest, body, mode: log["files"].__setitem__(dest, body))
+    monkeypatch.setattr(ingress.host, "sudo", lambda argv: log["commands"].append(argv))
     monkeypatch.setattr(ingress.host, "which", lambda name: True)
     monkeypatch.setattr(ingress.host, "wg_genkey", lambda: HOST_KEY)
+    monkeypatch.setattr(ingress.host, "system_binary", lambda name: f"/usr/sbin/{name}")
     return log
 
 
-def test_install_print_only_changes_nothing_and_never_shows_the_host_key(sudo_log, capsys):
+def test_install_print_only_changes_nothing_and_creates_no_key(sudo_log, capsys):
     ingress.install(_cfg(managed=True), yes=True, print_only=True)
 
-    out = capsys.readouterr().out
-    assert sudo_log == []
+    assert sudo_log == {"files": {}, "commands": []}
     assert not ingress.wireguard_key_path().exists()
-    assert "/etc/wireguard/asbx0.conf" in out and HOST_KEY not in out
-
-
-def test_install_writes_the_real_key_only_into_the_root_owned_wireguard_file(sudo_log, capsys):
-    cfg = _cfg(managed=True, clients={"laptop": {"public_key": CLIENT_KEY, "address": "10.99.0.2"}})
-
-    ingress.install(cfg, yes=True, print_only=False)
-
-    files = {dest: (body, mode) for dest, body, mode in (e for e in sudo_log if isinstance(e, tuple))}
-    body, mode = files["/etc/wireguard/asbx0.conf"]
-    assert mode == "0600" and f"PrivateKey = {HOST_KEY}" in body
-    assert f"PublicKey = {CLIENT_KEY}\nAllowedIPs = 10.99.0.2/32" in body
-    assert files[ingress.FIREWALL_PATH] == (ingress.render_firewall(cfg), "0644")
-    assert ["systemctl", "restart", ingress.UNIT_NAME] in sudo_log
-    assert ["systemctl", "restart", "wg-quick@asbx0"] in sudo_log
     assert HOST_KEY not in capsys.readouterr().out
+
+
+def test_install_generates_the_host_key_once_and_installs_it_unprinted(sudo_log, capsys):
+    ingress.install(_cfg(managed=True), yes=True, print_only=False)
+
+    assert ingress.wireguard_key_path().read_text() == HOST_KEY + "\n"
+    assert f"PrivateKey = {HOST_KEY}" in sudo_log["files"]["/etc/wireguard/asbx0.conf"]
+    assert ["systemctl", "restart", ingress.UNIT_NAME] in sudo_log["commands"]
+    assert HOST_KEY not in capsys.readouterr().out
+
+
+def test_install_needs_wireguard_tools_for_managed_wireguard(sudo_log, monkeypatch):
+    monkeypatch.setattr(ingress.host, "which", lambda name: name != "wg-quick")
+
+    with pytest.raises(AsbxError, match="wireguard-tools"):
+        ingress.install(_cfg(managed=True), yes=True, print_only=False)
+    assert sudo_log["files"] == {} and not ingress.wireguard_key_path().exists()
 
 
 def test_install_refuses_ineligible_interfaces_before_any_sudo(sudo_log):
     with pytest.raises(AsbxError, match="enp5s0"):
         ingress.install(_cfg(interfaces=["enp5s0"]), yes=True, print_only=False)
-    assert sudo_log == []
+    assert sudo_log == {"files": {}, "commands": []}
 
 
 def test_install_declined_installs_nothing(sudo_log, monkeypatch):
@@ -202,18 +238,18 @@ def test_install_declined_installs_nothing(sudo_log, monkeypatch):
 
     with pytest.raises(AsbxError, match="aborted"):
         ingress.install(_cfg(), yes=False, print_only=False)
-    assert sudo_log == []
+    assert sudo_log == {"files": {}, "commands": []}
 
 
 # ---------------------------------------------------------------------------
-# cmd_ingress_setup --adopt
+# cmd_ingress_setup --adopt / --create
 # ---------------------------------------------------------------------------
 
 def test_adopt_refuses_the_lan_nic(sudo_log):
     with pytest.raises(AsbxError, match="cannot adopt enp42s0: it carries the host's default route"):
         ingress.cmd_ingress_setup(FakeIncus(), _cfg(), create=False, adopt="enp42s0",
                                   print_only=False, yes=True)
-    assert sudo_log == []
+    assert sudo_log == {"files": {}, "commands": []}
 
 
 def test_adopt_records_the_interface_in_config_then_installs_rules_for_it(sudo_log, config_root):
@@ -223,9 +259,30 @@ def test_adopt_records_the_interface_in_config_then_installs_rules_for_it(sudo_l
                               print_only=False, yes=True)
 
     assert config.load_config()["network"]["ingress"]["interfaces"] == ["tailscale0"]
-    firewall = next(body for dest, body, _ in (e for e in sudo_log if isinstance(e, tuple))
-                    if dest == ingress.FIREWALL_PATH)
-    assert '{ "tailscale0" }' in firewall
+    assert '{ "tailscale0" }' in sudo_log["files"][ingress.FIREWALL_PATH]
+
+
+def test_adopt_print_only_leaves_config_alone_and_prints_rules_for_the_interface(sudo_log, config_root, capsys):
+    config.config_path().write_text("guest_user: agent\n")
+
+    ingress.cmd_ingress_setup(FakeIncus(), _cfg(), create=False, adopt="tailscale0",
+                              print_only=True, yes=True)
+
+    assert config.config_path().read_text() == "guest_user: agent\n"
+    out = capsys.readouterr().out
+    assert "interfaces:\n    - tailscale0" in out and '{ "tailscale0" }' in out
+
+
+def test_create_enables_managed_wireguard_and_installs_its_config(sudo_log, config_root):
+    config.config_path().write_text("guest_user: agent\n")
+    fake = FakeIncus()
+    fake.stub("network", "get", "ipv4.address", stdout="10.210.86.1/24\n")
+
+    ingress.cmd_ingress_setup(fake, _cfg(), create=True, adopt=None, print_only=False, yes=True)
+
+    assert config.load_config()["network"]["ingress"]["wireguard"]["enabled"] is True
+    assert "/etc/wireguard/asbx0.conf" in sudo_log["files"]
+    assert 'iifname "asbx0" drop' in sudo_log["files"][ingress.FIREWALL_PATH]
 
 
 def test_adopt_picks_from_the_listed_candidates(sudo_log, config_root, monkeypatch):
@@ -245,7 +302,7 @@ def test_create_refuses_a_tunnel_range_that_overlaps_the_bridge(sudo_log, config
 
     with pytest.raises(AsbxError, match="overlaps"):
         ingress.cmd_ingress_setup(fake, cfg, create=True, adopt=None, print_only=False, yes=True)
-    assert sudo_log == []
+    assert sudo_log == {"files": {}, "commands": []}
 
 
 # ---------------------------------------------------------------------------
@@ -273,3 +330,27 @@ def test_client_config_requires_an_endpoint(config_root):
 
     with pytest.raises(AsbxError, match="endpoint is empty"):
         ingress.cmd_client_config(FakeIncus(), cfg, "laptop")
+
+
+@pytest.mark.parametrize("managed, client, key, match", [
+    (False, "laptop", True, "managed WireGuard is off"),
+    (True, "phone", True, "no client 'phone'.*configured: laptop"),
+    (True, "laptop", False, "no host WireGuard key"),
+])
+def test_client_config_refuses(config_root, managed, client, key, match):
+    if key:
+        ingress.wireguard_key_path().write_text(HOST_KEY + "\n")
+    cfg = _cfg(managed=managed, endpoint="host.example:51820",
+               clients={"laptop": {"public_key": CLIENT_KEY, "address": "10.99.0.2"}})
+
+    with pytest.raises(AsbxError, match=match):
+        ingress.cmd_client_config(FakeIncus(), cfg, client)
+
+
+def test_install_refuses_a_host_key_file_that_is_not_a_wireguard_key(sudo_log):
+    # wg-quick runs its config as root; a crafted key file must not smuggle in PostUp lines.
+    ingress.wireguard_key_path().write_text(f"{HOST_KEY}\nPostUp = touch /tmp/pwned\n")
+
+    with pytest.raises(AsbxError, match="not a WireGuard private key"):
+        ingress.install(_cfg(managed=True), yes=True, print_only=False)
+    assert sudo_log == {"files": {}, "commands": []}

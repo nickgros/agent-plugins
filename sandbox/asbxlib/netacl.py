@@ -200,11 +200,15 @@ def acl_matches_config(incus: Incus, cfg: dict) -> bool:
 # sandbox must not be able to claim a neighbour's address (ADR 0005)
 # ---------------------------------------------------------------------------
 
-NIC_FILTER_OPTIONS = ("security.ipv4_filtering=true", "security.mac_filtering=true")
+NIC_FILTER_KEYS = ("security.ipv4_filtering", "security.mac_filtering")
+
+
+def bridge_subnet(incus: Incus, cfg: dict) -> ipaddress.IPv4Network:
+    return ipaddress.IPv4Interface(incus.network_get(cfg["network"]["name"], "ipv4.address")).network
 
 
 def _filtered_pin(eth0: dict[str, str]) -> Optional[str]:
-    if all(eth0.get(o.split("=")[0]) == "true" for o in NIC_FILTER_OPTIONS):
+    if all(eth0.get(k) == "true" for k in NIC_FILTER_KEYS):
         return eth0.get("ipv4.address") or None
     return None
 
@@ -222,7 +226,7 @@ def _lease_ipv4(incus: Incus, instance: str, cfg: dict) -> Optional[str]:
     hwaddr = incus.config_get(instance, "volatile.eth0.hwaddr").lower()
     if not hwaddr:
         return None
-    subnet = ipaddress.ip_interface(incus.network_get(cfg["network"]["name"], "ipv4.address")).network
+    subnet = bridge_subnet(incus, cfg)
     for lease in incus.network_leases(cfg["network"]["name"]):
         if str(lease.get("hwaddr", "")).lower() != hwaddr or lease.get("type") not in ("dynamic", "static"):
             continue
@@ -248,7 +252,7 @@ def pin_nic(incus: Incus, instance: str, cfg: dict, address: Optional[str] = Non
     if not chosen:
         raise AsbxError(f"{instance}: eth0 has no DHCP lease to pin yet; "
                         "check that the guest got an address, then re-run 'asbx up'")
-    options = (f"ipv4.address={chosen}", *NIC_FILTER_OPTIONS)
+    options = (f"ipv4.address={chosen}", *(f"{k}=true" for k in NIC_FILTER_KEYS))
     proc = incus.device_override(instance, "eth0", *options)
     if proc.returncode != 0:
         proc = incus.device_set(instance, "eth0", *options)

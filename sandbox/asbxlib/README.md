@@ -8,7 +8,7 @@ for PyYAML, then calls `cli.main`. This is the stdlib plus PyYAML only.
 | Module           | Owns                                                                                                       |
 |------------------|------------------------------------------------------------------------------------------------------------|
 | `cli.py`         | argparse wiring; maps `AsbxError` to `error: ...` and exit 1                                               |
-| `config.py`      | `config.yaml` defaults, strict merge, `ASBX_CONFIG_DIR`, harness item catalog and validation               |
+| `config.py`      | `config.yaml` defaults, strict merge, `ASBX_CONFIG_DIR`, harness item catalog and validation, `network.ingress` validation, single-key rewrites of `config.yaml` |
 | `manifest.py`    | Manifest validation and merging over config defaults; `Manifest`, `Repo`, `Mount`                          |
 | `incus.py`       | `Incus`: the only place that spawns `incus`. Non-root `exec_in` goes through `runuser` for a full session. |
 | `hostsetup.py`   | `init`, `install`                                                                                          |

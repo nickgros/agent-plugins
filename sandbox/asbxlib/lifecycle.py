@@ -131,6 +131,9 @@ def cmd_snapshot(incus: Incus, cfg: dict, group: str, label: Optional[str]) -> N
     ui.warn("pool driver does not support VM snapshots; falling back to incus copy")
     copy_name = _snapshot_copy_name(instance, label)
     incus.run("copy", instance, copy_name, "--instance-only")
+    # Incus refuses to start a NIC whose static IPv4 another NIC already has,
+    # stopped or not, so the copy must not keep the pin; restore puts it back.
+    incus.run("config", "device", "unset", copy_name, "eth0", "ipv4.address", check=False)
     ui.ok(f"snapshot {instance}/{label} created via copy ({copy_name})")
 
 
@@ -160,8 +163,11 @@ def cmd_restore(incus: Incus, cfg: dict, group: str, label: str, yes: bool) -> N
         if proc.returncode != 0:
             raise AsbxError(f"{instance}: restoring snapshot '{label}' failed:\n{(proc.stderr or '').strip()}")
     else:
+        ipv4 = netacl.pinned_ipv4(incus, instance)
         incus.run("delete", instance, "--force")
         incus.run("copy", copy_name, instance)
+        if ipv4:
+            netacl.pin_nic(incus, instance, cfg, address=ipv4)
     incus.run("start", instance)
     guest.wait_for_agent(incus, instance)
     sshconf.write_ssh_config(instance, cfg)

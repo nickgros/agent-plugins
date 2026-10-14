@@ -73,7 +73,9 @@ Deletes the sandbox and its generated SSH config, and removes the
 
 The default label is `pre-<UTC timestamp>`. If the storage pool can't
 snapshot the VM, `snapshot` falls back to a full `incus copy` named
-`<instance>-snap-<label>`. On a `dir` pool it also prints a notice that
+`<instance>-snap-<label>`. The copy doesn't keep the sandbox's pinned IPv4,
+because Incus won't start two NICs with the same static address; `restore`
+puts it back. On a `dir` pool it also prints a notice that
 snapshots are full root-disk copies.
 
 ### `restore <group> <label> [--yes]`
