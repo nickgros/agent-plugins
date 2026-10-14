@@ -29,6 +29,9 @@ the `python3` that runs it lacks PyYAML.
 - Puts `Include ~/.ssh/agent-sandbox.d/*.conf` on the first line of
   `~/.ssh/config`, creating the file at mode `0600` if needed. The line has
   to come before any `Host` block for the per-instance configs to apply.
+- Offers to install the ingress firewall at the end
+  ([below](#ingress-firewall)). Declining is allowed, but `up` refuses until
+  it is installed.
 
 Set `guest_user` before `build-base`, because the guest account is created
 in the base image.
@@ -123,6 +126,39 @@ sudo ufw route allow in on <bridge> out on <uplink>
 sudo ufw reload
 ```
 
+## Ingress firewall
+
+`asbx init` offers to install it; `asbx ingress setup` installs or updates
+it, and `asbx doctor --fix` reinstalls it. Both show what they write and ask
+before running sudo. `--print` prints the files and commands instead.
+
+- `/etc/asbx/firewall.nft` holds the `inet asbx` table. It drops every new
+  connection forwarded into the bridge unless it arrives over IPv4 on an
+  ingress interface. On the managed WireGuard interface it also drops new
+  connections to the host itself and forwarding anywhere but the bridge
+  ([security](security.md#network-ingress)).
+- `/etc/systemd/system/asbx-firewall.service` loads it at boot, before the
+  network and Incus start. The unit is enabled and started.
+- With managed WireGuard (`--create`), the host key is generated at
+  `~/.config/agent-sandbox/wireguard.key` (mode `0600`),
+  `/etc/wireguard/<interface>.conf` is written, and `wg-quick@<interface>`
+  is enabled. This needs `wireguard-tools` (`wg`, `wg-quick`) on the host.
+
+`--adopt` and `--create` also edit `config.yaml`. If the file has comments,
+they print the snippet to add instead.
+
+asbx's table only adds drops. Other host firewalls can still drop forwarded
+ingress traffic: `ufw`'s routed policy, firewalld, or Docker's `FORWARD
+DROP`. Allow forwarding from the ingress interface to the bridge in those.
+For managed WireGuard, open `network.ingress.wireguard.listen_port`
+(UDP, default 51820) on the host, for example
+`sudo ufw allow 51820/udp`.
+
+Known gap: unprivileged asbx can't read live nftables, so `up` and `doctor`
+trust the active unit and the installed file. A manual
+`sudo nft flush ruleset` removes the table without either noticing. Restart
+the unit (`sudo systemctl restart asbx-firewall`) after a flush.
+
 ## `asbx doctor`
 
 Prints PASS/FAIL/WARN for each check and exits 1 if anything FAILs.
@@ -134,12 +170,17 @@ Prints PASS/FAIL/WARN for each check and exits 1 if anything FAILs.
   - The SSH key exists and the `Include` line is in `~/.ssh/config`.
   - The base image alias exists.
   - The network ACL exists and its rules match the current computation.
+  - `asbx-firewall.service` is active and the installed rules match the
+    config (FAIL). Each ineligible ingress interface gets a WARN, as do an
+    inactive `wg-quick@<interface>` and an empty `endpoint` when managed
+    WireGuard is enabled.
   - Every mount source any manifest would attach is readable.
   - The storage pool driver is reported. `dir` gets a WARN, because its VM
     snapshots are full copies.
 - **Each manifest's sandbox:**
   - Its state.
-  - Whether the egress ACL is attached.
+  - Whether the egress ACL is attached, and whether the NIC has IPv4 and
+    MAC filtering and a pinned `ipv4.address`.
 - **Each running sandbox:**
   - Its name resolves on the host.
   - It has a live IPv4 default route.
@@ -150,5 +191,6 @@ The guest network probes are black-box. They don't assume which host
 firewall, if any, is filtering, so they catch a dead DHCP lease, an ACL
 misconfiguration and a host firewall drop the same way.
 
-`--fix` repairs the two host-side items it can. It creates or rewrites the
-network ACL, and adds the `~/.ssh/config` Include line.
+`--fix` repairs the host-side items it can. It creates or rewrites the
+network ACL, adds the `~/.ssh/config` Include line, and reinstalls the
+firewall unit through sudo.

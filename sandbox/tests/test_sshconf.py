@@ -1,7 +1,12 @@
 """Pure-logic tests for asbxlib.sshconf. No Incus required."""
 from __future__ import annotations
 
+import pytest
+
 from asbxlib import sshconf
+from asbxlib.errors import AsbxError
+
+from fake_incus import FakeIncus
 
 STALE_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 
@@ -80,12 +85,37 @@ def test_cmd_ssh_config_uses_the_manifest_instance_name(cfg, config_root, capsys
     (config_root / "demo.yaml").write_text("name: custom\n")
     cfg["instance_prefix"] = "sandbox-"
 
-    sshconf.cmd_ssh_config(cfg, "demo", "me@workstation", "~/.ssh/id_ed25519")
+    sshconf.cmd_ssh_config(FakeIncus(), cfg, "demo", "me@workstation", "~/.ssh/id_ed25519")
 
     out = capsys.readouterr().out
     assert "Host sandbox-custom\n" in out
     assert "HostName sandbox-custom.incus" in out
     assert "ProxyJump me@workstation" in out
+
+
+def test_cmd_ssh_config_direct_targets_the_pinned_ip_without_a_jump(cfg, config_root, capsys):
+    (config_root / "demo.yaml").write_text("{}\n")
+    fake = FakeIncus()
+    fake.set_instance(exists=True)
+    fake.set_devices({"eth0": {"ipv4.address": "10.210.86.192", "security.ipv4_filtering": "true",
+                               "security.mac_filtering": "true"}})
+
+    sshconf.cmd_ssh_config(fake, cfg, "demo", None, "~/.ssh/id_ed25519")
+
+    out = capsys.readouterr().out
+    assert "    HostName 10.210.86.192\n" in out
+    assert "ProxyJump" not in out
+
+
+def test_cmd_ssh_config_direct_refuses_an_address_without_anti_spoofing(cfg, config_root):
+    # An unfiltered address could be claimed by a neighbour sandbox, so it is never handed out.
+    (config_root / "demo.yaml").write_text("{}\n")
+    fake = FakeIncus()
+    fake.set_instance(exists=True)
+    fake.set_devices({"eth0": {"ipv4.address": "10.210.86.192"}})
+
+    with pytest.raises(AsbxError, match="asbx up demo"):
+        sshconf.cmd_ssh_config(fake, cfg, "demo", None, "~/.ssh/id_ed25519")
 
 
 # ---------------------------------------------------------------------------

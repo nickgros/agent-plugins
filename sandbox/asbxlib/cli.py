@@ -19,6 +19,7 @@ from . import up
 from . import lifecycle
 from . import doctor
 from . import hostsetup
+from . import ingress
 from . import sshconf
 
 
@@ -78,13 +79,36 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("group")
     sp.add_argument("cmd", nargs=argparse.REMAINDER)
 
-    sp = add("ssh-config", lambda incus, cfg, args: sshconf.cmd_ssh_config(cfg, args.group, args.jump, args.identity),
+    sp = add("ssh-config", lambda incus, cfg, args: sshconf.cmd_ssh_config(
+                 incus, cfg, args.group, None if args.direct else args.jump, args.identity),
              help="print the ~/.ssh/config stanza for another machine")
     sp.add_argument("group")
-    sp.add_argument("--jump", required=True, metavar="USER@HOST",
-                    help="how the other machine reaches this Incus host")
+    route = sp.add_mutually_exclusive_group(required=True)
+    route.add_argument("--jump", metavar="USER@HOST",
+                       help="how the other machine reaches this Incus host")
+    route.add_argument("--direct", action="store_true",
+                       help="connect to the sandbox's pinned IP over an ingress interface")
     sp.add_argument("--identity", default="~/.ssh/id_ed25519",
                     help="private key on the other machine (default: %(default)s)")
+
+    sp = add("ingress", lambda incus, cfg, args: ingress.cmd_ingress_setup(
+                 incus, cfg, args.create, args.adopt, args.print_only, args.yes),
+             help="install the ingress firewall; create or adopt an ingress interface")
+    ingress_sub = sp.add_subparsers(dest="ingress_command", required=True)
+    setup = ingress_sub.add_parser("setup", help="install or refresh the ingress firewall (sudo)")
+    which = setup.add_mutually_exclusive_group()
+    which.add_argument("--create", action="store_true",
+                       help="enable the asbx-managed WireGuard interface")
+    which.add_argument("--adopt", nargs="?", const="", metavar="IFACE",
+                       help="treat an existing WireGuard or tun interface as ingress; "
+                            "lists candidates when IFACE is omitted")
+    setup.add_argument("--print", dest="print_only", action="store_true",
+                       help="print the files and commands instead of installing them")
+    setup.add_argument("--yes", action="store_true", help="don't ask before changing anything")
+
+    sp = add("client-config", lambda incus, cfg, args: ingress.cmd_client_config(incus, cfg, args.name),
+             help="print a managed-WireGuard client's wg-quick config")
+    sp.add_argument("name")
 
     sp = add("shell", lambda incus, cfg, args: lifecycle.cmd_shell(incus, cfg, args.group, args.root),
              help="incus exec shell (host-side rescue)")

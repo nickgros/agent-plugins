@@ -193,3 +193,66 @@ def acl_matches_config(incus: Incus, cfg: dict) -> bool:
     if proc.returncode != 0:
         return False
     return acl_rules_match(expected, proc.stdout)
+
+
+# ---------------------------------------------------------------------------
+# NIC anti-spoofing and a pinned IPv4: ingress clients connect by IP, so a
+# sandbox must not be able to claim a neighbour's address (ADR 0005)
+# ---------------------------------------------------------------------------
+
+NIC_FILTER_OPTIONS = ("security.ipv4_filtering=true", "security.mac_filtering=true")
+
+
+def _filtered_pin(eth0: dict[str, str]) -> Optional[str]:
+    if all(eth0.get(o.split("=")[0]) == "true" for o in NIC_FILTER_OPTIONS):
+        return eth0.get("ipv4.address") or None
+    return None
+
+
+def pinned_ipv4(incus: Incus, instance: str) -> Optional[str]:
+    """eth0's pinned IPv4 when anti-spoofing is on too, else None. Read from the
+    instance's Incus config, never from the guest."""
+    return _filtered_pin(incus.devices(instance).get("eth0", {}))
+
+
+def _lease_ipv4(incus: Incus, instance: str, cfg: dict) -> Optional[str]:
+    """The address dnsmasq leased to eth0's MAC. The MAC is Incus's
+    `volatile.eth0.hwaddr`, and the lease list is the host's dnsmasq state,
+    so nothing the guest agent reports is used."""
+    hwaddr = incus.config_get(instance, "volatile.eth0.hwaddr").lower()
+    if not hwaddr:
+        return None
+    subnet = ipaddress.ip_interface(incus.network_get(cfg["network"]["name"], "ipv4.address")).network
+    for lease in incus.network_leases(cfg["network"]["name"]):
+        if str(lease.get("hwaddr", "")).lower() != hwaddr or lease.get("type") not in ("dynamic", "static"):
+            continue
+        try:
+            addr = ipaddress.ip_address(str(lease.get("address", "")))
+        except ValueError:
+            continue
+        if addr.version == 4 and addr in subnet:
+            return str(addr)
+    return None
+
+
+def pin_nic(incus: Incus, instance: str, cfg: dict, address: Optional[str] = None) -> str:
+    """Pins eth0's IPv4 and turns on IP and MAC anti-spoofing, or raises; returns
+    the pinned address. The address is, in order: one eth0 already has,
+    `address` (rebuild's previous one; set it before the first start), or the
+    running instance's current lease, so the guest keeps the address it holds."""
+    eth0 = incus.devices(instance).get("eth0", {})
+    if _filtered_pin(eth0):
+        return eth0["ipv4.address"]
+    current = eth0.get("ipv4.address") or None
+    chosen = current or address or _lease_ipv4(incus, instance, cfg)
+    if not chosen:
+        raise AsbxError(f"{instance}: eth0 has no DHCP lease to pin yet; "
+                        "check that the guest got an address, then re-run 'asbx up'")
+    options = (f"ipv4.address={chosen}", *NIC_FILTER_OPTIONS)
+    proc = incus.device_override(instance, "eth0", *options)
+    if proc.returncode != 0:
+        proc = incus.device_set(instance, "eth0", *options)
+    if proc.returncode != 0:
+        raise AsbxError(f"could not pin {chosen} and turn on IP/MAC filtering on {instance}'s NIC:\n"
+                        f"{(proc.stderr or '').strip()}")
+    return chosen

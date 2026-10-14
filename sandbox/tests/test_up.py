@@ -2,6 +2,8 @@
 instance is covered here; every other collaborator is stubbed out."""
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from asbxlib import manifest, up
@@ -19,6 +21,8 @@ def up_env(monkeypatch, cfg):
     )
     monkeypatch.setattr(up.manifest, "load_manifest", lambda group, cfg: loaded)
     monkeypatch.setattr(up.netacl, "ensure_acl", lambda incus, cfg: None)
+    monkeypatch.setattr(up.ingress, "require_firewall", lambda cfg: None)
+    monkeypatch.setattr(up.netacl, "pin_nic", lambda incus, instance, cfg, address=None: "10.210.86.192")
     for name in ("wait_for_agent", "wait_for_cloud_init", "sync_authorized_keys",
                  "write_guest_env", "write_git_identity", "configure_shell"):
         monkeypatch.setattr(up.guest, name, lambda *a, **k: None)
@@ -99,3 +103,37 @@ def test_cmd_up_warns_and_continues_when_shell_setup_fails(up_env, cfg, monkeypa
 
     out = capsys.readouterr()
     assert "shell not configured: installing zsh failed" in out.out + out.err
+
+
+def test_cmd_up_refuses_before_touching_incus_when_the_ingress_firewall_is_not_in_force(up_env, cfg, monkeypatch):
+    def no_firewall(cfg):
+        raise AsbxError("asbx-firewall.service is not active; run 'asbx ingress setup'")
+    monkeypatch.setattr(up.ingress, "require_firewall", no_firewall)
+    fake = _existing_instance(cfg, egress_mode="acl")
+
+    with pytest.raises(AsbxError, match="asbx ingress setup"):
+        up.cmd_up(fake, cfg, "demo", no_auth=True, no_provision=True)
+
+    assert fake.calls == []
+
+
+def test_cmd_up_pins_a_rebuilt_sandbox_s_previous_address_before_its_first_start(up_env, cfg, monkeypatch, tmp_path):
+    # The guest's first DHCP lease must already be the kept address, or IP filtering would drop it.
+    fake = FakeIncus()
+    pins: list[tuple] = []
+    monkeypatch.setattr(up.netacl, "pin_nic", lambda incus, instance, cfg, address=None: pins.append(
+        (address, ["start", "sandbox-demo"] in fake.calls)) or "10.210.86.50")
+    monkeypatch.setattr(up.netacl, "apply_nic_acl", lambda *a: None)
+    monkeypatch.setattr(up.manifest, "manifest_sha256", lambda path: "0")
+    loaded = up.manifest.load_manifest("demo", cfg)
+    monkeypatch.setattr(up.manifest, "load_manifest", lambda group, cfg: dataclasses.replace(
+        loaded, resources={"cpu": 2, "memory": "4GiB", "disk": "20GiB"}))
+    (tmp_path / "key.pub").write_text("ssh-ed25519 AAAA test\n")
+    cfg["ssh"]["key"] = str(tmp_path / "key")
+    fake.stub("image", "alias", "list", "--format", "json",
+              stdout=f'[{{"name": "{cfg["image_alias"]}", "target": "abc123"}}]')
+    fake.set_instance(exists=False)
+
+    up.cmd_up(fake, cfg, "demo", no_auth=True, no_provision=True, ipv4="10.210.86.50")
+
+    assert pins[0] == ("10.210.86.50", False)

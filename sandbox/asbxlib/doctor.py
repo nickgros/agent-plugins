@@ -12,6 +12,7 @@ from . import ui
 from . import host
 from . import config
 from . import guest
+from . import ingress
 from . import sshconf
 from . import netacl
 from . import netcheck
@@ -108,6 +109,30 @@ def cmd_doctor(incus: Incus, cfg: Optional[dict], fix: bool) -> int:
         include_present = True
     check("Include line in ~/.ssh/config", include_present, "missing or not the first directive")
 
+    # ADR 0005: ineligible interfaces only warn here; `up` and `ingress setup` refuse them.
+    interface_problems = ingress.interface_problems(cfg)
+    for name, why in interface_problems.items():
+        check(f"ingress interface {name}", False,
+              f"it {why}; 'asbx up' and 'asbx ingress setup' refuse it", warn_cond=True)
+    firewall_ok = ingress.firewall_installed_matches(cfg) and ingress.firewall_unit_active()
+    if not firewall_ok and fix and not interface_problems:
+        try:
+            ingress.install(cfg, yes=False, print_only=False)
+        except AsbxError as e:
+            ui.warn(f"--fix could not install the ingress firewall: {e}")
+    fix_hint = "" if fix else "; run 'asbx ingress setup' (or doctor --fix)"
+    check(f"{ingress.FIREWALL_PATH} matches config", ingress.firewall_installed_matches(cfg),
+          f"missing or out of date; 'asbx up' refuses until it matches{fix_hint}")
+    check(f"{ingress.UNIT_NAME} active", ingress.firewall_unit_active(),
+          f"the inbound default-deny is not loaded at boot{fix_hint}")
+    managed = ingress.managed_interface(cfg)
+    if managed:
+        check(f"wg-quick@{managed} active",
+              host.systemctl_system("is-active", f"wg-quick@{managed}").returncode == 0,
+              "managed WireGuard is enabled but not running; run 'asbx ingress setup'", warn_cond=True)
+        check("network.ingress.wireguard.endpoint set", bool(cfg["network"]["ingress"]["wireguard"]["endpoint"]),
+              "'asbx client-config' needs the host:port clients dial", warn_cond=True)
+
     if incus_on_path and server_ok:
         fingerprint = incus.image_alias_exists(cfg["image_alias"])
         check("base image alias exists", bool(fingerprint), f"{cfg['image_alias']} not found; run 'asbx build-base'")
@@ -169,6 +194,9 @@ def cmd_doctor(incus: Incus, cfg: Optional[dict], fix: bool) -> int:
                   f"egress_mode={egress_mode or 'unset'}; "
                   + (f"run 'asbx rebuild {group}' (the in-guest firewall fallback is gone)"
                      if egress_mode == "guest-nft" else f"run 'asbx up {group}'"))
+            pinned = netacl.pinned_ipv4(incus, instance)
+            check(f"{instance}: eth0 pinned with IP/MAC filtering", pinned is not None,
+                  f"anti-spoofing is off or the IPv4 isn't pinned; run 'asbx up {group}'")
 
         if state == "Running":
             hostname = sshconf.instance_hostname(instance, cfg)

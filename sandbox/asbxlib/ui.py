@@ -18,3 +18,13 @@ def confirm(question: str) -> bool:
 
 def confirm_exact(question: str, expected: str) -> bool:
     return input(question).strip() == expected
+
+
+def choose(question: str, options: list[str]) -> str:
+    """Numbered pick from `options`; raises ValueError on a bad answer."""
+    for i, opt in enumerate(options, start=1):
+        print(f"  {i}) {opt}", file=sys.stderr)
+    answer = input(question).strip()
+    if not answer.isdigit() or not 1 <= int(answer) <= len(options):
+        raise ValueError(answer)
+    return options[int(answer) - 1]

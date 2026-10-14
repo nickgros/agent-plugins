@@ -18,15 +18,20 @@ def doctor_env(monkeypatch):
     monkeypatch.setattr(doctor.host, "resolves", lambda name: True)
     monkeypatch.setattr(doctor.manifest_mod, "manifest_groups", lambda cfg: [("demo", "sandbox-demo")])
     monkeypatch.setattr(doctor.netacl, "acl_matches_config", lambda incus, cfg: True)
+    monkeypatch.setattr(doctor.ingress, "interface_problems", lambda cfg: {})
+    monkeypatch.setattr(doctor.ingress, "firewall_installed_matches", lambda cfg: True)
+    monkeypatch.setattr(doctor.ingress, "firewall_unit_active", lambda: True)
 
 
-def _incus(cfg, *, state="Running", version="7.0.0", egress_mode="acl"):
+def _incus(cfg, *, state="Running", version="7.0.0", egress_mode="acl", eth0=None):
     fake = FakeIncus()
     fake.stub("info", stdout=f'driver: qemu\n  server_version: "{version}"\n')
     fake.stub("image", "alias", "list", "--format", "json",
               stdout=f'[{{"name": "{cfg["image_alias"]}", "target": "abc123"}}]')
     fake.stub("config", "get", "user.asbx.egress_mode", stdout=egress_mode)
     fake.set_instance(exists=True, state=state)
+    fake.set_devices({"eth0": eth0 if eth0 is not None else {
+        "ipv4.address": "10.210.86.192", "security.ipv4_filtering": "true", "security.mac_filtering": "true"}})
     return fake
 
 
@@ -107,6 +112,36 @@ def test_cmd_doctor_fails_when_incus_is_too_old_for_bridged_nic_acls(doctor_env,
     assert rc == 1
     assert "FAIL Incus supports bridged-NIC ACLs" in out
     assert "6.0.0" in out
+
+
+def test_cmd_doctor_fails_when_the_ingress_firewall_is_not_loaded(doctor_env, monkeypatch, capsys, cfg):
+    monkeypatch.setattr(doctor.ingress, "firewall_unit_active", lambda: False)
+
+    rc = doctor.cmd_doctor(_incus(cfg, state="Stopped"), cfg, fix=False)
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "FAIL asbx-firewall.service active" in out
+
+
+def test_cmd_doctor_only_warns_about_an_ineligible_ingress_interface(doctor_env, monkeypatch, capsys, cfg):
+    monkeypatch.setattr(doctor.ingress, "interface_problems", lambda cfg: {"enp5s0": "is a bridge"})
+
+    rc = doctor.cmd_doctor(_incus(cfg, state="Stopped"), cfg, fix=False)
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "WARN ingress interface enp5s0: it is a bridge" in out
+
+
+def test_cmd_doctor_fails_an_instance_whose_nic_is_not_pinned_and_filtered(doctor_env, capsys, cfg):
+    fake = _incus(cfg, state="Stopped", eth0={"ipv4.address": "10.210.86.192"})
+
+    rc = doctor.cmd_doctor(fake, cfg, fix=False)
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "FAIL sandbox-demo: eth0 pinned with IP/MAC filtering" in out
 
 
 # ---------------------------------------------------------------------------

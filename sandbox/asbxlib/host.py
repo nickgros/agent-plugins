@@ -8,8 +8,10 @@ import os
 import shutil
 import socket
 import subprocess
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, Optional
 
 from .errors import AsbxError
 
@@ -39,6 +41,99 @@ def aws_profile_region(profile: str) -> str:
 
 def systemctl_user(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True, check=False)
+
+
+def systemctl_system(*args: str) -> subprocess.CompletedProcess:
+    """Unprivileged system-manager queries such as `is-active`."""
+    return subprocess.run(["systemctl", *args], capture_output=True, text=True, check=False)
+
+
+def sudo(argv: list[str]) -> None:
+    """Runs `argv` as root. The terminal is inherited so sudo can prompt."""
+    proc = subprocess.run(["sudo", *argv], check=False)
+    if proc.returncode != 0:
+        raise AsbxError(f"command failed: sudo {' '.join(argv)}")
+
+
+def sudo_install_file(dest: str, body: str, mode: str) -> None:
+    """Writes `body` to root-owned `dest` with `mode`, creating parent dirs.
+    The temp copy is 0600 so a secret body is never readable by others."""
+    fd, tmp = tempfile.mkstemp(prefix="asbx-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(body)
+        sudo(["install", "-D", "-m", mode, "-o", "root", "-g", "root", tmp, dest])
+    finally:
+        os.unlink(tmp)
+
+
+def read_text(path: str) -> Optional[str]:
+    """The file's text, or None when it is missing or unreadable."""
+    try:
+        return Path(path).read_text()
+    except OSError:
+        return None
+
+
+@dataclass(frozen=True)
+class InterfaceFacts:
+    devtype: str               # uevent DEVTYPE ("wireguard", "bridge", "wlan", ...), "" for none
+    tun_flags: Optional[int]   # set for tun and tap devices
+    is_bridge: bool
+
+
+def interface_facts(name: str) -> Optional[InterfaceFacts]:
+    """What sysfs says about a network interface, or None if it doesn't exist."""
+    base = Path("/sys/class/net") / name
+    if not base.exists():
+        return None
+    devtype = ""
+    for line in (read_text(str(base / "uevent")) or "").splitlines():
+        if line.startswith("DEVTYPE="):
+            devtype = line[len("DEVTYPE="):]
+    try:
+        tun_flags: Optional[int] = int((read_text(str(base / "tun_flags")) or "").strip(), 16)
+    except ValueError:
+        tun_flags = None
+    return InterfaceFacts(devtype=devtype, tun_flags=tun_flags, is_bridge=(base / "bridge").is_dir())
+
+
+def interface_names() -> list[str]:
+    try:
+        return sorted(os.listdir("/sys/class/net"))
+    except OSError:
+        return []
+
+
+def default_route_interfaces() -> set[str]:
+    """Interfaces carrying an IPv4 or IPv6 default route."""
+    names: set[str] = set()
+    for line in (read_text("/proc/net/route") or "").splitlines()[1:]:
+        fields = line.split()
+        if len(fields) >= 8 and fields[1] == "00000000" and fields[7] == "00000000":
+            names.add(fields[0])
+    for line in (read_text("/proc/net/ipv6_route") or "").splitlines():
+        fields = line.split()
+        if len(fields) == 10 and fields[0] == "0" * 32 and fields[1] == "00" and fields[9] != "lo":
+            names.add(fields[9])
+    return names
+
+
+def wg_genkey() -> str:
+    return _wg(["genkey"])
+
+
+def wg_pubkey(private_key: str) -> str:
+    return _wg(["pubkey"], stdin=private_key + "\n")
+
+
+def _wg(args: list[str], stdin: Optional[str] = None) -> str:
+    if not which("wg"):
+        raise AsbxError("`wg` not found; install wireguard-tools")
+    proc = subprocess.run(["wg", *args], input=stdin, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise AsbxError(f"wg {' '.join(args)} failed: {proc.stderr.strip()}")
+    return proc.stdout.strip()
 
 
 def resolves(name: str) -> bool:

@@ -138,6 +138,17 @@ class Incus:
         proc = self.run("network", "get", network, key)
         return proc.stdout.strip()
 
+    def network_leases(self, network: str) -> list[dict]:
+        """`incus network list-leases` as parsed JSON; [] when unreadable."""
+        proc = self.run("network", "list-leases", network, "--format", "json", check=False)
+        if proc.returncode != 0:
+            return []
+        try:
+            data = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            return []
+        return data if isinstance(data, list) else []
+
     def network_acl_exists(self, acl: str) -> bool:
         proc = self.run("network", "acl", "show", acl, check=False)
         return proc.returncode == 0

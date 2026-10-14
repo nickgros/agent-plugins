@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
+from .errors import AsbxError
+from .incus import Incus
 from . import config
 from . import host
 from . import manifest as manifest_mod
+from . import netacl
 from . import ui
 
 
@@ -22,17 +26,18 @@ def render_ssh_config_block(instance: str, hostname: str, ssh_key: str, known_ho
     )
 
 
-def render_remote_stanza(instance: str, hostname: str, guest_user: str, jump: str,
+def render_remote_stanza(instance: str, hostname: str, guest_user: str, jump: Optional[str],
                          identity: str) -> str:
     """Host block for a machine that is not the Incus host. A literal alias, not
     a `sandbox-*` wildcard: VSCode's host list shows only literal Host names, and
-    adds its own bare-name entry on connect when it finds none."""
+    adds its own bare-name entry on connect when it finds none. With no `jump`,
+    `hostname` is the sandbox's pinned IP, reached over an ingress interface."""
     return (
         f"Host {instance}\n"
         f"    HostName {hostname}\n"
         f"    User {guest_user}\n"
-        f"    ProxyJump {jump}\n"
-        f"    IdentityFile {identity}\n"
+        + (f"    ProxyJump {jump}\n" if jump else "")
+        + f"    IdentityFile {identity}\n"
         f"    IdentitiesOnly yes\n"
         f"    StrictHostKeyChecking no\n"
         f"    UserKnownHostsFile /dev/null\n"
@@ -40,10 +45,17 @@ def render_remote_stanza(instance: str, hostname: str, guest_user: str, jump: st
     )
 
 
-def cmd_ssh_config(cfg: dict, group: str, jump: str, identity: str) -> None:
+def cmd_ssh_config(incus: Incus, cfg: dict, group: str, jump: Optional[str], identity: str) -> None:
+    """`jump` None means --direct: the pinned IPv4 comes from Incus config, never the guest."""
     instance = manifest_mod.load_manifest(group, cfg).instance
-    print(render_remote_stanza(instance, instance_hostname(instance, cfg),
-                               cfg["guest_user"], jump, identity), end="")
+    if jump:
+        hostname = instance_hostname(instance, cfg)
+    else:
+        pinned = netacl.pinned_ipv4(incus, instance) if incus.instance_exists(instance) else None
+        if not pinned:
+            raise AsbxError(f"{instance} has no pinned IPv4 yet; run 'asbx up {group}' first")
+        hostname = pinned
+    print(render_remote_stanza(instance, hostname, cfg["guest_user"], jump, identity), end="")
 
 
 def config_file(cfg: dict, instance: str) -> Path:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 import posixpath
 import re
@@ -9,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from . import host
 from .errors import AsbxError
 
 # ---------------------------------------------------------------------------
@@ -62,6 +64,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "fc00::/7",
             "fe80::/10",
         ],
+        "ingress": {
+            # Operator-run interfaces (WireGuard or tun, e.g. tailscale0) whose
+            # peers may reach any port on sandbox IPs. See docs/security.md.
+            "interfaces": [],
+            # asbx-managed WireGuard interface, created by `asbx ingress setup --create`.
+            "wireguard": {
+                "enabled": False,
+                "interface": "asbx0",
+                # The host's tunnel address; each client gets a /32 inside it.
+                "address": "10.99.0.1/24",
+                "listen_port": 51820,
+                # host:port clients dial. Required by `asbx client-config`.
+                "endpoint": "",
+                # name -> {public_key, address}; each client generates its own key.
+                "clients": {},
+            },
+        },
     },
     "ssh": {
         "key": "~/.config/agent-sandbox/id_ed25519",
@@ -107,7 +126,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 
 # User-keyed maps: any key is valid under these, not just the default ones.
-OPEN_MAPS = frozenset({"defaults.env", "defaults.remotes", "defaults.tools", "harness_env"})
+OPEN_MAPS = frozenset({"defaults.env", "defaults.remotes", "defaults.tools", "harness_env",
+                       "network.ingress.wireguard.clients"})
 
 
 def deep_merge(base: dict, override: dict, path: str = "") -> dict:
@@ -247,6 +267,74 @@ def is_aws_profile_list(value: Any) -> bool:
         isinstance(p, str) and AWS_PROFILE_RE.fullmatch(p) for p in value)
 
 
+# Linux interface names: at most 15 bytes (IFNAMSIZ - 1). The name lands in an
+# nft ruleset and a systemd unit name, so it is restricted further than the kernel's rule.
+IFACE_RE = re.compile(r"[A-Za-z0-9_.-]{1,15}")
+# A WireGuard key: 32 bytes in base64, so 43 significant characters and one '='.
+WG_KEY_RE = re.compile(r"[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=")
+CLIENT_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
+
+
+def _ingress_error(key: str, rule: str) -> AsbxError:
+    return AsbxError(f"config {config_path()}: 'network.ingress.{key}' {rule}")
+
+
+def validate_ingress(ingress: dict) -> dict:
+    """Validates `network.ingress` and returns a new mapping with duplicate
+    interfaces dropped and client entries normalized to {public_key, address}
+    strings. The input is never mutated: it may be DEFAULT_CONFIG's own dict."""
+    interfaces = ingress["interfaces"]
+    if not isinstance(interfaces, list) or not all(
+            isinstance(i, str) and IFACE_RE.fullmatch(i) for i in interfaces):
+        raise _ingress_error("interfaces", "must be a list of interface names matching [A-Za-z0-9_.-]{1,15}")
+
+    wg = ingress["wireguard"]
+    if not isinstance(wg["enabled"], bool):
+        raise _ingress_error("wireguard.enabled", "must be true or false")
+    if not isinstance(wg["interface"], str) or not IFACE_RE.fullmatch(wg["interface"]):
+        raise _ingress_error("wireguard.interface", "must be an interface name matching [A-Za-z0-9_.-]{1,15}")
+    try:
+        host_if = ipaddress.IPv4Interface(str(wg["address"]))
+    except ValueError:
+        raise _ingress_error("wireguard.address", "must be an IPv4 address with a prefix, e.g. 10.99.0.1/24")
+    subnet = host_if.network
+    if subnet.prefixlen > 30 or host_if.ip in (subnet.network_address, subnet.broadcast_address):
+        raise _ingress_error("wireguard.address", "must be a host address in a subnet of /30 or larger")
+    port = wg["listen_port"]
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise _ingress_error("wireguard.listen_port", "must be a port number from 1 to 65535")
+    if not isinstance(wg["endpoint"], str):
+        raise _ingress_error("wireguard.endpoint", "must be a host:port string")
+
+    clients: dict[str, dict[str, str]] = {}
+    seen_keys: set[str] = set()
+    seen_addrs: set[ipaddress.IPv4Address] = {host_if.ip}
+    for name, entry in (wg["clients"] or {}).items():
+        where = f"wireguard.clients.{name}"
+        if not isinstance(name, str) or not CLIENT_NAME_RE.fullmatch(name):
+            raise _ingress_error(where, "is not a valid client name ([A-Za-z0-9_.-]+)")
+        if not isinstance(entry, dict) or set(entry) != {"public_key", "address"}:
+            raise _ingress_error(where, "must be a mapping with exactly 'public_key' and 'address'")
+        key = entry["public_key"]
+        if not isinstance(key, str) or not WG_KEY_RE.fullmatch(key):
+            raise _ingress_error(f"{where}.public_key", "must be a WireGuard public key (`wg pubkey` output)")
+        try:
+            addr = ipaddress.IPv4Address(str(entry["address"]))
+        except ValueError:
+            raise _ingress_error(f"{where}.address", "must be an IPv4 address")
+        if addr not in subnet or addr in (subnet.network_address, subnet.broadcast_address):
+            raise _ingress_error(f"{where}.address", f"must be a host address inside {subnet}")
+        if addr in seen_addrs:
+            raise _ingress_error(f"{where}.address", f"{addr} is already used by the host or another client")
+        if key in seen_keys:
+            raise _ingress_error(f"{where}.public_key", "is already used by another client")
+        seen_keys.add(key)
+        seen_addrs.add(addr)
+        clients[name] = {"public_key": key, "address": str(addr)}
+    return {"interfaces": list(dict.fromkeys(interfaces)),
+            "wireguard": {**wg, "clients": clients}}
+
+
 def load_config() -> dict[str, Any]:
     if not config_path().exists():
         raise AsbxError(f"no config at {config_path()}; run 'asbx init' first")
@@ -265,7 +353,37 @@ def load_config() -> dict[str, Any]:
     if cfg["shell"] not in SHELL_PATHS:
         raise AsbxError(
             f"config {config_path()}: 'shell' must be one of: {', '.join(SHELL_PATHS)}")
+    cfg["network"]["ingress"] = validate_ingress(cfg["network"]["ingress"])
     return cfg
+
+
+def set_config_value(keys: tuple[str, ...], value: Any) -> None:
+    """Sets one user override in config.yaml, e.g. ('network', 'ingress',
+    'interfaces'). The file is rewritten from its parsed form, which would drop
+    comments, so a file with comments is left alone and the caller is told what
+    to add instead."""
+    path = config_path()
+    text = path.read_text()
+    snippet = yaml.safe_dump(nest(keys, value), sort_keys=False)
+    if any(line.lstrip().startswith("#") or " #" in line for line in text.splitlines()):
+        raise AsbxError(f"{path} has comments, which rewriting it would lose; "
+                        f"add this yourself, then re-run:\n{snippet}")
+    raw = yaml.safe_load(text) or {}
+    node = raw
+    for k in keys[:-1]:
+        child = node.get(k)
+        if not isinstance(child, dict):
+            child = node[k] = {}
+        node = child
+    node[keys[-1]] = value
+    host.write_private_text(path, yaml.safe_dump(raw, sort_keys=False))
+
+
+def nest(keys: tuple[str, ...], value: Any) -> dict:
+    """`value` under `keys`, e.g. nest(('a', 'b'), 1) == {'a': {'b': 1}}."""
+    for k in reversed(keys):
+        value = {k: value}
+    return value
 
 
 def expand(p: str) -> Path:

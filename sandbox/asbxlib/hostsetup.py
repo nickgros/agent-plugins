@@ -9,6 +9,7 @@ from .errors import AsbxError
 from .incus import Incus
 from . import config
 from . import host
+from . import ingress
 from . import netacl
 from . import sshconf
 from . import ui
@@ -44,6 +45,11 @@ def cmd_init(incus: Incus) -> None:
     sshconf.ensure_ssh_include(cfg)
 
     config.expand(cfg["ssh"]["config_dir"]).mkdir(parents=True, exist_ok=True)
+
+    try:
+        ingress.install(cfg, yes=False, print_only=False)
+    except AsbxError as e:
+        ui.warn(f"ingress firewall not installed: {e}")
     ui.ok("asbx init complete")
 
 

@@ -1,5 +1,9 @@
 # The Incus host is the only SSH entry point
 
+Superseded in part by [ADR 0005](0005-host-enforced-ingress.md): SSH is no
+longer the only entry point. "Nothing the guest reports reaches host or
+client config" still holds.
+
 Sandboxes used to join the tailnet themselves. That put a Tailscale auth key
 in every guest, needed a tailnet tag policy, and wrote the guest-reported
 tailnet DNS name into the host's SSH config, which let a compromised guest

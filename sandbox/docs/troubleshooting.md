@@ -26,6 +26,23 @@ reports the version. Upgrade to Incus 7.0 LTS (the minimum is 6.0.4 or
 Its `egress_mode` is `guest-nft`, and the agent can turn that firewall off
 with root. Save your work and run `asbx rebuild <group>`.
 
+## `up` refuses: firewall unit inactive or out of date
+
+`up` checks that `asbx-firewall.service` is active and that
+`/etc/asbx/firewall.nft` matches what the current config renders. It fails
+after a fresh install, after you skipped the offer in `asbx init`, or after
+you changed `network.name` or `network.ingress`. Run `asbx ingress setup`
+(or `asbx doctor --fix`).
+
+## Ineligible ingress interface
+
+`ingress setup` and `up` refuse, and `doctor` warns, naming the interface
+and the reason. Only kernel WireGuard and `tun` devices that exist are
+eligible. Bridges, tap devices, the Incus bridge, the default-route
+interface, ethernet and wlan are not. Remove the entry from
+`network.ingress.interfaces`. The managed interface may be missing until
+`asbx ingress setup` creates it.
+
 ## `rebuild refused, unsafe repos`
 
 Every entry under `/workspace` that is dirty, has no remote, or has commits

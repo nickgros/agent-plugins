@@ -25,6 +25,13 @@ does not reach an existing `config.yaml`. Add the new entries yourself.
 | `network.acl`               | `asbx-egress`                               | Name of the egress ACL                                                                                      |
 | `network.dns_domain`        | `incus`                                     | Bridge `dns.domain`. SSH `HostName` is `<instance>.<dns_domain>`.                                           |
 | `network.block_cidrs`       | RFC1918, link-local, `100.64.0.0/10`, ULA   | Egress drop list ([security](security.md#network-egress))                                                   |
+| `network.ingress.interfaces` | `[]`                                     | Adopted ingress interfaces you run, e.g. `[tailscale0]`. Kernel WireGuard or `tun` only ([security](security.md#network-ingress)). |
+| `network.ingress.wireguard.enabled` | `false`                           | Add the asbx-managed WireGuard interface to ingress                                                         |
+| `network.ingress.wireguard.interface` | `asbx0`                         | Managed WireGuard interface name; `wg-quick@<interface>`                                                    |
+| `network.ingress.wireguard.address` | `10.99.0.1/24`                    | Host's tunnel address. Client addresses are `/32`s inside it.                                               |
+| `network.ingress.wireguard.listen_port` | `51820`                       | UDP port the host listens on                                                                                |
+| `network.ingress.wireguard.endpoint` | `""`                             | `host:port` clients dial. Required for `client-config`; never autodetected.                                 |
+| `network.ingress.wireguard.clients` | `{}`                              | `name: {public_key, address}`, e.g. `laptop: {public_key: "<base64>", address: 10.99.0.2}`. Remove an entry and re-run `asbx ingress setup` to revoke. |
 | `ssh.key`                   | `~/.config/agent-sandbox/id_ed25519`        | Key used from the host to the guests                                                                        |
 | `ssh.config_dir`            | `~/.ssh/agent-sandbox.d`                    | Generated per-instance SSH configs                                                                          |
 | `ssh.known_hosts`           | `~/.config/agent-sandbox/known_hosts`       | Dedicated known-hosts file. `rm` and `up` purge the instance's entry.                                       |

@@ -230,3 +230,81 @@ def test_compute_acl_rules_for_network_treats_ipv6_none_as_absent(raw, cfg):
     rules = netacl.compute_acl_rules_for_network(fake, cfg)
 
     assert rules == netacl.compute_acl_rules("10.0.0.1/24", cfg["network"]["block_cidrs"])
+
+
+# ---------------------------------------------------------------------------
+# pin_nic / pinned_ipv4 — anti-spoofing plus a host-chosen address, fail closed
+# ---------------------------------------------------------------------------
+
+FILTERED = {"security.ipv4_filtering": "true", "security.mac_filtering": "true"}
+
+
+def _leases_fake(eth0: dict, hwaddr: str = "10:66:6A:BA:78:4F") -> FakeIncus:
+    fake = FakeIncus()
+    fake.set_devices({"eth0": eth0})
+    fake.stub("config", "get", "volatile.eth0.hwaddr", stdout=f"{hwaddr}\n")
+    fake.stub("network", "get", "ipv4.address", stdout="10.210.86.1/24\n")
+    fake.stub("network", "list-leases", stdout=(
+        '[{"hostname":"sandbox-demo","hwaddr":"10:66:6a:ba:78:4f","address":"fd42::5","type":"dynamic"},'
+        # A guest-chosen DHCP hostname must not matter: matching is by Incus's MAC.
+        ' {"hostname":"sandbox-demo","hwaddr":"10:66:6a:00:00:01","address":"10.210.86.7","type":"dynamic"},'
+        ' {"hostname":"other","hwaddr":"10:66:6a:ba:78:4f","address":"10.210.86.192","type":"dynamic"}]'))
+    return fake
+
+
+def test_pin_nic_pins_the_lease_held_by_eth0_s_mac_and_turns_on_filtering():
+    fake = _leases_fake({"name": "eth0", "network": "incusbr0"})
+
+    assert netacl.pin_nic(fake, "sandbox-demo", _acl_cfg()) == "10.210.86.192"
+
+    assert ["config", "device", "override", "sandbox-demo", "eth0", "ipv4.address=10.210.86.192",
+            "security.ipv4_filtering=true", "security.mac_filtering=true"] in fake.calls
+
+
+def test_pin_nic_leaves_an_already_pinned_and_filtered_nic_alone():
+    fake = _leases_fake({"ipv4.address": "10.210.86.50", **FILTERED})
+
+    assert netacl.pin_nic(fake, "sandbox-demo", _acl_cfg()) == "10.210.86.50"
+    assert not any(c[:2] == ["config", "device"] for c in fake.calls)
+
+
+def test_pin_nic_keeps_an_address_set_without_filtering_and_adds_the_filters():
+    fake = _leases_fake({"ipv4.address": "10.210.86.50"})
+
+    assert netacl.pin_nic(fake, "sandbox-demo", _acl_cfg(), address="10.210.86.99") == "10.210.86.50"
+
+
+def test_pin_nic_uses_the_given_address_before_the_first_start():
+    fake = FakeIncus()
+    fake.set_devices({})
+
+    assert netacl.pin_nic(fake, "sandbox-demo", _acl_cfg(), address="10.210.86.99") == "10.210.86.99"
+    assert not any(c[:2] == ["network", "list-leases"] for c in fake.calls)
+
+
+def test_pin_nic_raises_when_eth0_s_mac_holds_no_ipv4_lease():
+    fake = _leases_fake({}, hwaddr="10:66:6a:ff:ff:ff")
+
+    with pytest.raises(AsbxError, match="no DHCP lease"):
+        netacl.pin_nic(fake, "sandbox-demo", _acl_cfg())
+
+
+def test_pin_nic_raises_when_incus_rejects_the_address():
+    fake = _leases_fake({})
+    fake.stub("device", "override", rc=1, stderr="exists")
+    fake.stub("device", "set", rc=1, stderr="IP address already in use")
+
+    with pytest.raises(AsbxError, match="already in use"):
+        netacl.pin_nic(fake, "sandbox-demo", _acl_cfg())
+
+
+@pytest.mark.parametrize("eth0,expected", [
+    ({"ipv4.address": "10.210.86.50", **FILTERED}, "10.210.86.50"),
+    ({"ipv4.address": "10.210.86.50", "security.ipv4_filtering": "true"}, None),
+    ({"ipv4.address": "10.210.86.50"}, None),
+    (FILTERED, None),
+])
+def test_pinned_ipv4_requires_the_address_and_both_filters(eth0, expected):
+    fake = FakeIncus()
+    fake.set_devices({"eth0": eth0})
+    assert netacl.pinned_ipv4(fake, "sandbox-demo") == expected

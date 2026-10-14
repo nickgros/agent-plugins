@@ -180,6 +180,36 @@ def test_cmd_rebuild_refuses_when_workspace_cannot_be_listed(monkeypatch, cfg):
     assert not any("delete" in " ".join(c) for c in fake.calls)
 
 
+def test_cmd_rebuild_keeps_the_pinned_address_and_checks_the_firewall_before_deleting(monkeypatch, cfg):
+    monkeypatch.setattr(lifecycle.manifest_mod, "load_manifest", lambda group, cfg: _fake_manifest())
+    fake = _clean_pushed_fake("myrepo\n", "/workspace/myrepo\n")
+    fake.set_devices({"eth0": {"ipv4.address": "10.210.86.192", "security.ipv4_filtering": "true",
+                               "security.mac_filtering": "true"}})
+    order: list[str] = []
+    monkeypatch.setattr(lifecycle.ingress, "require_firewall", lambda cfg: order.append("firewall"))
+    monkeypatch.setattr(lifecycle, "cmd_rm", lambda incus, cfg, group, yes: order.append("rm"))
+    monkeypatch.setattr(lifecycle.up, "cmd_up", lambda incus, cfg, group, no_auth, no_provision, ipv4:
+                        order.append(f"up {ipv4}"))
+
+    lifecycle.cmd_rebuild(fake, cfg, "demo", force=False, yes=True)
+
+    assert order == ["firewall", "rm", "up 10.210.86.192"]
+
+
+def test_cmd_rebuild_refuses_without_the_ingress_firewall_and_deletes_nothing(monkeypatch, cfg):
+    monkeypatch.setattr(lifecycle.manifest_mod, "load_manifest", lambda group, cfg: _fake_manifest())
+    fake = _clean_pushed_fake("myrepo\n", "/workspace/myrepo\n")
+
+    def no_firewall(cfg):
+        raise AsbxError("run 'asbx ingress setup'")
+    monkeypatch.setattr(lifecycle.ingress, "require_firewall", no_firewall)
+
+    with pytest.raises(AsbxError, match="asbx ingress setup"):
+        lifecycle.cmd_rebuild(fake, cfg, "demo", force=False, yes=True)
+
+    assert not any("delete" in " ".join(c) for c in fake.calls)
+
+
 @pytest.mark.parametrize("shell,root,expected", [
     ("zsh", False, "/usr/bin/zsh"),
     ("bash", False, "/bin/bash"),

@@ -80,11 +80,47 @@ The agent can use any credential placed in the guest:
 - Everything in `harness_env` and `env` is exported to every guest shell
   through `/etc/profile.d/asbx-env.sh`.
 
-## SSH
+## Network ingress
 
-Sandboxes are reachable only from the Incus host, over the bridge. The
-generated host SSH config is built only from the instance name and
-`config.yaml`. Nothing the guest reports ends up in it. Access from other
-machines goes through the host as a jump host
+Inbound is default-deny, enforced on the host. The asbx-owned nftables table
+`inet asbx` drops every new connection forwarded into the bridge unless it
+arrives over IPv4 on an ingress interface. This holds with no ingress
+interfaces configured. Without it, Incus's own forward chain accepts
+anything routed into the bridge. A drop in any nftables table wins over
+Incus's accept. `up` refuses to run unless `asbx-firewall.service` is active
+and `/etc/asbx/firewall.nft` matches the current config
+([host setup](host-setup.md#ingress-firewall)).
+
+Each sandbox NIC has `security.ipv4_filtering`, `security.mac_filtering`
+and a pinned `ipv4.address`. The guest can't take another address, so the
+IP a client dials is the sandbox it reaches. Like the ACL, this fails
+closed: `up` fails if Incus refuses. The pin comes from host data only: an
+existing `ipv4.address`, the previous instance's address on `rebuild`, or
+the Incus DHCP lease matched by the NIC's MAC.
+
+Ingress interfaces are opt-in. They are the interfaces in
+`network.ingress.interfaces` (adopted, run by you, such as `tailscale0`)
+plus the asbx-managed WireGuard interface when
+`network.ingress.wireguard.enabled` is set. Only kernel WireGuard and `tun`
+devices are eligible. Bridges, tap devices, the Incus bridge, the
+default-route interface, ethernet, wlan and missing interfaces are refused.
+Ingress clients reach any port on any sandbox. IPv6 from ingress interfaces
+is dropped.
+
+| Interface | asbx governs                                                                                            |
+| --------- | ------------------------------------------------------------------------------------------------------- |
+| Managed   | Forwarding into the bridge. Also drops new connections to the host itself and forwarding anywhere else. |
+| Adopted   | Forwarding into the bridge only. Host input and other routing stay yours.                               |
+
+The generated SSH configs, client configs and pinned addresses are built
+only from the instance name, Incus host data and `config.yaml`. Nothing the
+guest reports ends up in them. By default, access from other machines goes
+through the host as a jump host
 ([ADR 0004](adr/0004-host-is-the-jump-host.md),
+[ADR 0005](adr/0005-host-enforced-ingress.md),
 [Connecting](connecting.md)).
+
+Known gap: a guest can always make itself reachable through an outbound
+tunnel, for example an iroh relay. The egress ACL filters by IP, so it can't
+prevent that. Treat anything a sandbox serves as reachable by whoever
+controls the guest.

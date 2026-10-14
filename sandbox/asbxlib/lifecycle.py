@@ -9,6 +9,8 @@ from .incus import Incus
 from . import config
 from . import host
 from . import guest
+from . import ingress
+from . import netacl
 from . import sshconf
 from . import ui
 from . import up
@@ -209,17 +211,23 @@ def cmd_rebuild(incus: Incus, cfg: dict, group: str, force: bool, yes: bool) -> 
     manifest = manifest_mod.load_manifest(group, cfg)
     instance = manifest.instance
 
+    ipv4 = None
     if incus.instance_exists(instance):
         blocking = find_unsafe_repos(incus, instance, group, cfg["guest_user"])
         if blocking and not force:
             raise AsbxError("rebuild refused, unsafe repos:\n  " + "\n  ".join(blocking))
+        # Kept so client configs and `ssh-config --direct` stanzas survive the rebuild.
+        ipv4 = netacl.pinned_ipv4(incus, instance)
+
+    # `up` would refuse after the delete; refuse before it instead.
+    ingress.require_firewall(cfg)
 
     if not yes:
         if not ui.confirm_exact(f"type '{group}' to confirm rebuild of {instance}: ", group):
             raise AsbxError("aborted")
 
     cmd_rm(incus, cfg, group, yes=True)
-    up.cmd_up(incus, cfg, group, no_auth=False, no_provision=False)
+    up.cmd_up(incus, cfg, group, no_auth=False, no_provision=False, ipv4=ipv4)
 
 
 def cmd_rm(incus: Incus, cfg: dict, group: str, yes: bool) -> None:

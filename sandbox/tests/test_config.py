@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+
 import pytest
 
 from asbxlib import config
@@ -166,3 +168,69 @@ def test_load_config_defaults_shell_to_bash(tmp_path, monkeypatch):
     (tmp_path / "config.yaml").write_text("guest_user: agent\n")
 
     assert config.load_config()["shell"] == "bash"
+
+
+VALID_KEY = "Y2xpZW50IGtleSBmb3IgYXNieCB0ZXN0cyAzMiBieXQ="
+
+
+def _ingress(**wireguard):
+    ingress = copy.deepcopy(config.DEFAULT_CONFIG["network"]["ingress"])
+    ingress["wireguard"].update(wireguard)
+    return ingress
+
+
+def test_validate_ingress_normalizes_clients_and_leaves_its_input_untouched():
+    raw = _ingress(clients={"laptop": {"public_key": VALID_KEY, "address": "10.99.0.2"}})
+    raw["interfaces"] = ["tailscale0", "tailscale0"]
+    before = copy.deepcopy(raw)
+
+    out = config.validate_ingress(raw)
+
+    assert out["interfaces"] == ["tailscale0"]
+    assert out["wireguard"]["clients"] == {"laptop": {"public_key": VALID_KEY, "address": "10.99.0.2"}}
+    assert raw == before
+
+
+@pytest.mark.parametrize("wireguard, match", [
+    ({"clients": {"l": {"public_key": "not-a-key", "address": "10.99.0.2"}}}, "public_key"),
+    ({"clients": {"l": {"public_key": VALID_KEY, "address": "10.98.0.2"}}}, "inside 10.99.0.0/24"),
+    ({"clients": {"l": {"public_key": VALID_KEY, "address": "10.99.0.1"}}}, "already used"),
+    ({"clients": {"a": {"public_key": VALID_KEY, "address": "10.99.0.2"},
+                  "b": {"public_key": VALID_KEY, "address": "10.99.0.3"}}}, "already used by another client"),
+    ({"clients": {"l": {"public_key": VALID_KEY}}}, "exactly 'public_key' and 'address'"),
+    ({"address": "10.99.0.0/24"}, "host address"),
+    ({"listen_port": 0}, "listen_port"),
+    ({"interface": "a name with spaces"}, "wireguard.interface"),
+])
+def test_validate_ingress_rejects(wireguard, match):
+    with pytest.raises(AsbxError, match=match):
+        config.validate_ingress(_ingress(**wireguard))
+
+
+def test_validate_ingress_rejects_interface_names_that_could_escape_the_ruleset():
+    raw = _ingress()
+    raw["interfaces"] = ['wg0" accept']
+    with pytest.raises(AsbxError, match="interfaces"):
+        config.validate_ingress(raw)
+
+
+def test_set_config_value_writes_the_override_and_keeps_others(tmp_path, monkeypatch):
+    monkeypatch.setenv(config.CONFIG_DIR_ENV, str(tmp_path))
+    (tmp_path / "config.yaml").write_text("guest_user: dev\n")
+
+    config.set_config_value(("network", "ingress", "interfaces"), ["tailscale0"])
+
+    loaded = config.load_config()
+    assert loaded["guest_user"] == "dev"
+    assert loaded["network"]["ingress"]["interfaces"] == ["tailscale0"]
+    assert loaded["network"]["name"] == "incusbr0"
+
+
+def test_set_config_value_refuses_to_drop_comments(tmp_path, monkeypatch):
+    monkeypatch.setenv(config.CONFIG_DIR_ENV, str(tmp_path))
+    original = "# my notes\nguest_user: dev\n"
+    (tmp_path / "config.yaml").write_text(original)
+
+    with pytest.raises(AsbxError, match="interfaces:\n    - tailscale0"):
+        config.set_config_value(("network", "ingress", "interfaces"), ["tailscale0"])
+    assert (tmp_path / "config.yaml").read_text() == original

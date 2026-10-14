@@ -67,3 +67,71 @@ only the Incus host's known-hosts file. Without it, the other machine would
 hit `REMOTE HOST IDENTIFICATION HAS CHANGED` after every rebuild. The cost is
 that the guest's host key is not verified on the last hop. That hop runs
 from your own jump host, over the bridge on that host.
+
+## Direct access over an ingress interface
+
+This is opt-in. It gives other machines a direct path to sandbox IPs, for
+any IPv4 protocol, including UDP (QUIC, mosh). The host's firewall admits
+only traffic arriving on an ingress interface
+([security](security.md#network-ingress),
+[ADR 0005](adr/0005-host-enforced-ingress.md)). Every client reaches every
+sandbox, on any port.
+
+Pick one, or both:
+
+- **Adopt an interface you already run**, such as `tailscale0`, ZeroTier or
+  OpenVPN. It must be a kernel WireGuard or `tun` device.
+  `asbx ingress setup --adopt tailscale0` adds it to
+  `network.ingress.interfaces`; `--adopt` alone lists the eligible
+  interfaces and asks. Clients on that network must also route the bridge
+  subnet through the host; that part is yours, for example a Tailscale
+  subnet route.
+- **Create managed WireGuard.** `asbx ingress setup --create` enables
+  `network.ingress.wireguard`, generates the host key at
+  `~/.config/agent-sandbox/wireguard.key`, writes
+  `/etc/wireguard/asbx0.conf` after showing it, and enables
+  `wg-quick@asbx0`. Set `network.ingress.wireguard.endpoint` to the
+  `host:port` clients dial; asbx never guesses it.
+
+For managed WireGuard, each client keeps its own key:
+
+1. On the client, run `wg genkey | tee laptop.key | wg pubkey`.
+2. Add the public key to `config.yaml` with an address inside
+   `network.ingress.wireguard.address`:
+
+   ```yaml
+   network:
+     ingress:
+       wireguard:
+         clients:
+           laptop: {public_key: "<base64>", address: 10.99.0.2}
+   ```
+
+3. Run `asbx ingress setup` to reinstall the WireGuard config.
+4. Run `asbx client-config laptop` and use the output on the client,
+   replacing the `PrivateKey` placeholder with the client's key:
+
+   ```
+   [Interface]
+   PrivateKey = <this machine's private key>
+   Address = 10.99.0.2/32
+
+   [Peer]
+   PublicKey = <host public key>
+   Endpoint = <network.ingress.wireguard.endpoint>
+   AllowedIPs = <bridge subnet>
+   PersistentKeepalive = 25
+   ```
+
+To revoke a client, remove its entry and re-run `asbx ingress setup`.
+
+For SSH over the ingress path, print a stanza with `--direct` instead of
+`--jump`:
+
+```
+$ asbx ssh-config demo --direct
+```
+
+Its `HostName` is the sandbox's pinned IPv4 address and it has no
+`ProxyJump`. The key setup is the same as for the jump host:
+`ssh.extra_pubkeys` and `--identity`. The address survives `rebuild`.

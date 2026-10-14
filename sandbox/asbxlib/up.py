@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
-from . import auth, config, guest, harnesssync, manifest, netacl, provision, sshconf, ui
+from . import auth, config, guest, harnesssync, ingress, manifest, netacl, provision, sshconf, ui
 from .errors import AsbxError
 from .incus import Incus
 
 
-def cmd_up(incus: Incus, cfg: dict, group: str, no_auth: bool, no_provision: bool) -> None:
+def cmd_up(incus: Incus, cfg: dict, group: str, no_auth: bool, no_provision: bool,
+           ipv4: Optional[str] = None) -> None:
+    """`ipv4` is the address to pin on a newly created sandbox (rebuild's previous one)."""
     manifest_obj = manifest.load_manifest(group, cfg)
     instance = manifest_obj.instance
+
+    # Inbound default-deny is part of the boundary (ADR 0005): no sandbox runs without it.
+    ingress.require_firewall(cfg)
 
     try:
         netacl.ensure_acl(incus, cfg)
@@ -38,6 +44,9 @@ def cmd_up(incus: Incus, cfg: dict, group: str, no_auth: bool, no_provision: boo
         fingerprint = incus.image_alias_exists(cfg["image_alias"])
         incus.config_set(instance, "user.asbx.base_image", fingerprint or "")
         incus.config_set(instance, "user.asbx.manifest_sha256", manifest.manifest_sha256(manifest_obj.path))
+        if ipv4:
+            # Before the first start, so the guest's first lease is already this address.
+            netacl.pin_nic(incus, instance, cfg, address=ipv4)
 
         incus.run("start", instance)
 
@@ -65,6 +74,9 @@ def cmd_up(incus: Incus, cfg: dict, group: str, no_auth: bool, no_provision: boo
             )
         if egress_mode != "acl":
             netacl.apply_nic_acl(incus, instance, cfg)
+
+    pinned = netacl.pin_nic(incus, instance, cfg)
+    ui.ok(f"{instance}: eth0 pinned to {pinned} with IP/MAC filtering")
 
     # Mounts are synced on every `up`, not just at creation: adding a mount to
     # a manifest has to reach an existing sandbox for `up` to be idempotent.

@@ -12,7 +12,9 @@ The VM is the boundary. Restrictions on guest privileges are not part of it.
 
 - **Network:** the guest can reach the internet but not your LAN, your
   tailnet, or any other port on the host. An Incus ACL on the VM's NIC
-  enforces this. If the ACL can't be attached, `up` fails.
+  enforces this. If the ACL can't be attached, `up` fails. Inbound is
+  default-deny: a host firewall admits only traffic on opt-in ingress
+  interfaces, and each NIC is pinned to one IPv4 address.
 - **Files:** the guest can't read host files except declared mounts, and
   those are always read-only.
 - **Guest root:** the guest user has passwordless root inside the VM.
@@ -70,7 +72,9 @@ asbx ssh demo          # or connect to host `sandbox-demo` from your IDE
 | `list`                               | List every manifest's sandbox and its state                     |
 | `ssh <group> [cmd...]`               | SSH into the sandbox                                            |
 | `shell <group> [--root]`             | `incus exec` shell, for when SSH is broken                      |
-| `ssh-config <group> --jump USER@HOST` | Print the SSH stanza for another machine                        |
+| `ssh-config <group> --jump USER@HOST \| --direct` | Print the SSH stanza for another machine                        |
+| `ingress setup [--create \| --adopt [IFACE]]` | Install the host firewall; set up managed WireGuard or adopt an interface |
+| `client-config NAME`                 | Print a WireGuard client config                                 |
 | `start` / `stop` / `restart <group>` | Incus lifecycle wrappers                                        |
 | `snapshot <group> [label]`           | Snapshot the sandbox                                            |
 | `restore <group> <label>`            | Restore a snapshot                                              |
