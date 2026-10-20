@@ -8,7 +8,7 @@
 | ------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `install [--force]` | Creates the `~/.local/bin/asbx` symlink. `--force` replaces an existing file there.                          |
 | `init`              | One-time setup ([host setup](host-setup.md#asbx-init)). Never overwrites an existing `config.yaml`.          |
-| `doctor [--fix]`    | Readiness report; exits 1 on any FAIL ([checks](host-setup.md#asbx-doctor)). `--fix` rewrites the ACL, adds the Include line and reinstalls the firewall unit. |
+| `doctor [--fix]`    | Readiness report; exits 1 on any FAIL ([checks](host-setup.md#asbx-doctor)). `--fix` rewrites the ACL, adds the Include line and, once the ingress firewall is opted in, reinstalls it. |
 | `ingress setup [--create \| --adopt [IFACE]] [--print] [--yes]` | Installs the firewall and ingress config through sudo ([details](host-setup.md#ingress-firewall)). `--create` enables managed WireGuard; `--adopt` adds an existing interface, or lists eligible ones and asks. `--print` prints the files and commands instead; `--yes` skips confirmation. |
 | `build-base`        | Bakes the base image and repoints the alias ([details](host-setup.md#asbx-build-base)).                      |
 
@@ -17,8 +17,8 @@
 ### `up <group> [--no-auth] [--no-provision]`
 
 Idempotent. It refuses to start if any ingress interface is ineligible. Once
-the ingress firewall is opted in (installed by `asbx ingress setup`, or any
-ingress interface configured), it also refuses unless `asbx-firewall.service`
+the ingress firewall is opted in (either of its installed files exists, or any
+ingress interface is configured), it also refuses unless `asbx-firewall.service`
 is active and `/etc/asbx/firewall.nft` matches the current config. Run
 `asbx ingress setup` to fix either
 ([troubleshooting](troubleshooting.md#up-refuses-firewall-unit-inactive-or-out-of-date)).

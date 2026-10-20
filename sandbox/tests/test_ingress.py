@@ -116,8 +116,13 @@ def test_render_firewall_replaces_the_table_atomically():
 
 @pytest.fixture
 def installed(monkeypatch, host_ifaces):
-    state = {"file": None, "active": True}
+    """`file` is the installed ruleset's text (None: absent); `unit` whether the
+    unit file exists; `active` whether systemd reports the unit active."""
+    state = {"file": None, "unit": False, "active": True}
     monkeypatch.setattr(ingress.host, "read_text", lambda path: state["file"])
+    monkeypatch.setattr(ingress.host, "path_exists", lambda path: (
+        state["file"] is not None if path == ingress.FIREWALL_PATH else
+        state["unit"] if path == ingress.UNIT_PATH else False))
     monkeypatch.setattr(ingress, "firewall_unit_active", lambda: state["active"])
     return state
 
@@ -128,9 +133,18 @@ def test_require_firewall_allows_a_host_that_never_opted_in(installed):
     ingress.require_firewall(_cfg())
 
 
-def test_require_firewall_is_required_once_an_ingress_interface_is_configured(installed):
+def test_require_firewall_stays_required_after_a_partial_uninstall(installed):
+    # Only the ruleset was deleted; the unit file remains, so the host is still opted in.
+    installed["unit"] = True
+
     with pytest.raises(AsbxError, match="missing or out of date"):
-        ingress.require_firewall(_cfg(interfaces=["tailscale0"]))
+        ingress.require_firewall(_cfg())
+
+
+@pytest.mark.parametrize("cfg_kwargs", [{"interfaces": ["tailscale0"]}, {"managed": True}])
+def test_require_firewall_is_required_once_any_ingress_interface_is_configured(installed, cfg_kwargs):
+    with pytest.raises(AsbxError, match="missing or out of date"):
+        ingress.require_firewall(_cfg(**cfg_kwargs))
 
 
 def test_require_firewall_passes_when_the_installed_file_matches_and_the_unit_is_active(installed):

@@ -16,7 +16,7 @@ import stat
 import pytest
 import yaml
 
-from asbxlib import config, host
+from asbxlib import config, host, ingress
 from asbxlib.errors import AsbxError
 from fake_incus import FakeIncus
 
@@ -35,6 +35,8 @@ def test_cmd_init_writes_a_private_config_and_does_not_overwrite_it(home, monkey
     monkeypatch.setitem(config.DEFAULT_CONFIG["ssh"], "config_dir", str(home / "confd"))
     monkeypatch.setattr(hostsetup.netacl, "ensure_acl", lambda incus, cfg: None)
     monkeypatch.setattr(hostsetup.sshconf, "ensure_ssh_include", lambda cfg: None)
+    # The ingress firewall is opt-in: init must never install it.
+    monkeypatch.setattr(ingress, "install", lambda *a, **k: pytest.fail("init installed the firewall"))
 
     hostsetup.cmd_init(FakeIncus())
 

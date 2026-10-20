@@ -7,7 +7,9 @@ import pytest
 
 from fake_incus import FakeIncus
 
-from asbxlib import doctor
+from asbxlib import doctor, ingress
+
+REAL_FIREWALL_OPTED_IN = ingress.firewall_opted_in
 
 
 @pytest.fixture
@@ -125,15 +127,22 @@ def test_cmd_doctor_fails_when_the_ingress_firewall_is_not_loaded(doctor_env, mo
     assert "FAIL asbx-firewall.service active" in out
 
 
-def test_cmd_doctor_passes_a_host_that_never_opted_in_to_the_firewall(doctor_env, monkeypatch, capsys, cfg):
-    monkeypatch.setattr(doctor.ingress, "firewall_opted_in", lambda cfg: False)
+def test_cmd_doctor_passes_and_fix_never_installs_on_a_host_that_never_opted_in(
+        doctor_env, monkeypatch, capsys, cfg):
+    # The real opt-in check: no ingress interfaces in cfg and no installed file.
+    monkeypatch.setattr(doctor.ingress, "firewall_opted_in", REAL_FIREWALL_OPTED_IN)
+    monkeypatch.setattr(doctor.ingress.host, "path_exists", lambda path: False)
     monkeypatch.setattr(doctor.ingress, "firewall_unit_active", lambda: False)
+    installs: list = []
+    monkeypatch.setattr(doctor.ingress, "install", lambda *a, **k: installs.append(a))
+    monkeypatch.setattr(doctor.netacl, "ensure_acl", lambda incus, cfg: None)
 
-    rc = doctor.cmd_doctor(_incus(cfg, state="Stopped"), cfg, fix=False)
+    rc = doctor.cmd_doctor(_incus(cfg, state="Stopped"), cfg, fix=True)
 
     out = capsys.readouterr().out
     assert rc == 0
     assert "PASS ingress firewall not installed (opt-in" in out
+    assert installs == []
 
 
 def test_cmd_doctor_only_warns_about_an_ineligible_ingress_interface(doctor_env, monkeypatch, capsys, cfg):

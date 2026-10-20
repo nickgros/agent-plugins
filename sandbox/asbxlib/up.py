@@ -14,7 +14,7 @@ def cmd_up(incus: Incus, cfg: dict, group: str, no_auth: bool, no_provision: boo
     manifest_obj = manifest.load_manifest(group, cfg)
     instance = manifest_obj.instance
 
-    # Inbound default-deny is part of the boundary (ADR 0005): no sandbox runs without it.
+    # ADR 0005: once the ingress firewall is opted in, no sandbox runs without it.
     ingress.require_firewall(cfg)
 
     try:

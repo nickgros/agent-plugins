@@ -93,6 +93,10 @@ def read_text(path: str) -> Optional[str]:
         return None
 
 
+def path_exists(path: str) -> bool:
+    return os.path.lexists(path)
+
+
 @dataclass(frozen=True)
 class InterfaceFacts:
     devtype: str               # uevent DEVTYPE ("wireguard", "bridge", "wlan", ...), "" for none

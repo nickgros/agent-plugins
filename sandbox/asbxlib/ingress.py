@@ -220,10 +220,12 @@ def _require_eligible(cfg: dict) -> None:
 
 
 def firewall_opted_in(cfg: dict) -> bool:
-    """The firewall is opt-in: in force once `asbx ingress setup` installed it
-    (its file is present) or once any ingress interface is configured, since
-    ingress without the default-deny would admit the whole LAN too."""
-    return bool(ingress_interfaces(cfg)) or host.read_text(FIREWALL_PATH) is not None
+    """The firewall is opt-in: in force while any piece `asbx ingress setup`
+    installed remains (the ruleset or the unit), or once any ingress interface
+    is configured, since ingress without the default-deny would admit the whole
+    LAN too. Existence, not readability: a partial uninstall must not lift it."""
+    return (bool(ingress_interfaces(cfg))
+            or host.path_exists(FIREWALL_PATH) or host.path_exists(UNIT_PATH))
 
 
 def require_firewall(cfg: dict) -> None:
@@ -316,7 +318,7 @@ def install(cfg: dict, yes: bool, print_only: bool) -> None:
     if print_only:
         return
     if not yes and not ui.confirm("install these as root with sudo? [y/N] "):
-        raise AsbxError("aborted; 'asbx up' refuses to run until the ingress firewall is installed")
+        raise AsbxError("aborted; nothing installed")
     for f in plan.files:
         host.sudo_install_file(f.path, f.secret or f.shown, f.mode)
     for argv in plan.commands:

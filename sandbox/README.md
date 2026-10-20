@@ -12,9 +12,10 @@ The VM is the boundary. Restrictions on guest privileges are not part of it.
 
 - **Network:** the guest can reach the internet but not your LAN, your
   tailnet, or any other port on the host. An Incus ACL on the VM's NIC
-  enforces this. If the ACL can't be attached, `up` fails. Inbound is
-  default-deny: a host firewall admits only traffic on opt-in ingress
-  interfaces, and each NIC is pinned to one IPv4 address.
+  enforces this. If the ACL can't be attached, `up` fails. Inbound
+  default-deny is opt-in: once `asbx ingress setup` installs it, a host
+  firewall admits only traffic on ingress interfaces. Each NIC is pinned to
+  one IPv4 address.
 - **Files:** the guest can't read host files except declared mounts, and
   those are always read-only.
 - **Guest root:** the guest user has passwordless root inside the VM.

@@ -132,7 +132,8 @@ Configuring any ingress interface makes it required. Without it, a LAN
 device with a route to the bridge subnet through the host can reach any
 sandbox port.
 
-To remove it:
+To remove it, delete both files; while either remains, `up` keeps requiring
+the firewall:
 
 ```
 sudo systemctl disable --now asbx-firewall.service
@@ -180,10 +181,11 @@ Prints PASS/FAIL/WARN for each check and exits 1 if anything FAILs.
   - The SSH key exists and the `Include` line is in `~/.ssh/config`.
   - The base image alias exists.
   - The network ACL exists and its rules match the current computation.
-  - `asbx-firewall.service` is active and the installed rules match the
-    config (FAIL). Each ineligible ingress interface gets a WARN, as do an
-    inactive `wg-quick@<interface>` and an empty `endpoint` when managed
-    WireGuard is enabled.
+  - Once the ingress firewall is opted in, `asbx-firewall.service` is active
+    and the installed rules match the config (FAIL). A host that never opted
+    in gets a PASS saying so. Each ineligible ingress interface gets a WARN,
+    as do an inactive `wg-quick@<interface>` and an empty `endpoint` when
+    managed WireGuard is enabled.
   - Every mount source any manifest would attach is readable.
   - The storage pool driver is reported. `dir` gets a WARN, because its VM
     snapshots are full copies.
@@ -202,5 +204,6 @@ firewall, if any, is filtering, so they catch a dead DHCP lease, an ACL
 misconfiguration and a host firewall drop the same way.
 
 `--fix` repairs the host-side items it can. It creates or rewrites the
-network ACL, adds the `~/.ssh/config` Include line, and reinstalls the
-firewall unit through sudo.
+network ACL, adds the `~/.ssh/config` Include line, and, on a host that has
+opted in, reinstalls the firewall unit through sudo. It never installs the
+firewall on a host that hasn't.
