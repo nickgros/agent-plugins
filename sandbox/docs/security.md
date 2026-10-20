@@ -82,13 +82,15 @@ The agent can use any credential placed in the guest:
 
 ## Network ingress
 
-Inbound is default-deny, enforced on the host. The asbx-owned nftables table
-`inet asbx` drops every new connection forwarded into the bridge unless it
-arrives over IPv4 on an ingress interface. This holds with no ingress
-interfaces configured. Without it, Incus's own forward chain accepts
-anything routed into the bridge. A drop in any nftables table wins over
-Incus's accept. `up` refuses to run unless `asbx-firewall.service` is active
-and `/etc/asbx/firewall.nft` matches the current config
+Inbound default-deny is opt-in, enforced on the host. Once installed by
+`asbx ingress setup`, the asbx-owned nftables table `inet asbx` drops every
+new connection forwarded into the bridge unless it arrives over IPv4 on an
+ingress interface. Without it, Incus's own forward chain accepts anything
+routed into the bridge, so a LAN device with a route to the bridge subnet
+through the host can reach any sandbox port. A drop in any nftables table
+wins over Incus's accept. Once the firewall is installed, or any ingress
+interface is configured, `up` refuses to run unless `asbx-firewall.service`
+is active and `/etc/asbx/firewall.nft` matches the current config
 ([host setup](host-setup.md#ingress-firewall)).
 
 Each sandbox NIC has `security.ipv4_filtering`, `security.mac_filtering`

@@ -16,9 +16,11 @@
 
 ### `up <group> [--no-auth] [--no-provision]`
 
-Idempotent. It refuses to start unless `asbx-firewall.service` is active and
-`/etc/asbx/firewall.nft` matches the current config, or if any ingress
-interface is ineligible. Run `asbx ingress setup` to fix either
+Idempotent. It refuses to start if any ingress interface is ineligible. Once
+the ingress firewall is opted in (installed by `asbx ingress setup`, or any
+ingress interface configured), it also refuses unless `asbx-firewall.service`
+is active and `/etc/asbx/firewall.nft` matches the current config. Run
+`asbx ingress setup` to fix either
 ([troubleshooting](troubleshooting.md#up-refuses-firewall-unit-inactive-or-out-of-date)).
 Steps, in order:
 

@@ -122,6 +122,17 @@ def installed(monkeypatch, host_ifaces):
     return state
 
 
+def test_require_firewall_allows_a_host_that_never_opted_in(installed):
+    installed["active"] = False
+
+    ingress.require_firewall(_cfg())
+
+
+def test_require_firewall_is_required_once_an_ingress_interface_is_configured(installed):
+    with pytest.raises(AsbxError, match="missing or out of date"):
+        ingress.require_firewall(_cfg(interfaces=["tailscale0"]))
+
+
 def test_require_firewall_passes_when_the_installed_file_matches_and_the_unit_is_active(installed):
     cfg = _cfg(interfaces=["tailscale0"])
     installed["file"] = ingress.render_firewall(cfg)

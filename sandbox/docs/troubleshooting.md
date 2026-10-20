@@ -28,11 +28,13 @@ with root. Save your work and run `asbx rebuild <group>`.
 
 ## `up` refuses: firewall unit inactive or out of date
 
-`up` checks that `asbx-firewall.service` is active and that
-`/etc/asbx/firewall.nft` matches what the current config renders. It fails
-after a fresh install, after you skipped the offer in `asbx init`, or after
-you changed `network.name` or `network.ingress`. Run `asbx ingress setup`
-(or `asbx doctor --fix`).
+Once the ingress firewall is opted in, `up` checks that
+`asbx-firewall.service` is active and that `/etc/asbx/firewall.nft` matches
+what the current config renders. It fails after you configure an ingress
+interface without running `asbx ingress setup`, or after you change
+`network.name` or `network.ingress`. Run `asbx ingress setup` (or
+`asbx doctor --fix`). To stop using the firewall instead, remove it
+([host setup](host-setup.md#ingress-firewall)) and clear `network.ingress`.
 
 ## Ineligible ingress interface
 

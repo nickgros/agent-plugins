@@ -35,7 +35,6 @@ def test_cmd_init_writes_a_private_config_and_does_not_overwrite_it(home, monkey
     monkeypatch.setitem(config.DEFAULT_CONFIG["ssh"], "config_dir", str(home / "confd"))
     monkeypatch.setattr(hostsetup.netacl, "ensure_acl", lambda incus, cfg: None)
     monkeypatch.setattr(hostsetup.sshconf, "ensure_ssh_include", lambda cfg: None)
-    monkeypatch.setattr(hostsetup.ingress, "install", lambda cfg, yes, print_only: None)
 
     hostsetup.cmd_init(FakeIncus())
 

@@ -29,9 +29,6 @@ the `python3` that runs it lacks PyYAML.
 - Puts `Include ~/.ssh/agent-sandbox.d/*.conf` on the first line of
   `~/.ssh/config`, creating the file at mode `0600` if needed. The line has
   to come before any `Host` block for the per-instance configs to apply.
-- Offers to install the ingress firewall at the end
-  ([below](#ingress-firewall)). Declining is allowed, but `up` refuses until
-  it is installed.
 
 Set `guest_user` before `build-base`, because the guest account is created
 in the base image.
@@ -128,9 +125,22 @@ sudo ufw reload
 
 ## Ingress firewall
 
-`asbx init` offers to install it; `asbx ingress setup` installs or updates
-it, and `asbx doctor --fix` reinstalls it. Both show what they write and ask
-before running sudo. `--print` prints the files and commands instead.
+The firewall is opt-in. `asbx ingress setup` installs or updates it, and once
+it is installed `asbx doctor --fix` reinstalls it. Both show what they write
+and ask before running sudo. `--print` prints the files and commands instead.
+Configuring any ingress interface makes it required. Without it, a LAN
+device with a route to the bridge subnet through the host can reach any
+sandbox port.
+
+To remove it:
+
+```
+sudo systemctl disable --now asbx-firewall.service
+sudo nft delete table inet asbx
+sudo rm /etc/systemd/system/asbx-firewall.service /etc/asbx/firewall.nft
+sudo rmdir /etc/asbx
+sudo systemctl daemon-reload
+```
 
 - `/etc/asbx/firewall.nft` holds the `inet asbx` table. It drops every new
   connection forwarded into the bridge unless it arrives over IPv4 on an

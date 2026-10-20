@@ -21,6 +21,7 @@ def doctor_env(monkeypatch):
     monkeypatch.setattr(doctor.ingress, "interface_problems", lambda cfg: {})
     monkeypatch.setattr(doctor.ingress, "firewall_installed_matches", lambda cfg: True)
     monkeypatch.setattr(doctor.ingress, "firewall_unit_active", lambda: True)
+    monkeypatch.setattr(doctor.ingress, "firewall_opted_in", lambda cfg: True)
 
 
 def _incus(cfg, *, state="Running", version="7.0.0", egress_mode="acl", eth0=None):
@@ -122,6 +123,17 @@ def test_cmd_doctor_fails_when_the_ingress_firewall_is_not_loaded(doctor_env, mo
     out = capsys.readouterr().out
     assert rc == 1
     assert "FAIL asbx-firewall.service active" in out
+
+
+def test_cmd_doctor_passes_a_host_that_never_opted_in_to_the_firewall(doctor_env, monkeypatch, capsys, cfg):
+    monkeypatch.setattr(doctor.ingress, "firewall_opted_in", lambda cfg: False)
+    monkeypatch.setattr(doctor.ingress, "firewall_unit_active", lambda: False)
+
+    rc = doctor.cmd_doctor(_incus(cfg, state="Stopped"), cfg, fix=False)
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "PASS ingress firewall not installed (opt-in" in out
 
 
 def test_cmd_doctor_only_warns_about_an_ineligible_ingress_interface(doctor_env, monkeypatch, capsys, cfg):

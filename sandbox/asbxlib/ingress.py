@@ -219,9 +219,19 @@ def _require_eligible(cfg: dict) -> None:
                         f"{config.config_path()} (see docs/security.md)")
 
 
+def firewall_opted_in(cfg: dict) -> bool:
+    """The firewall is opt-in: in force once `asbx ingress setup` installed it
+    (its file is present) or once any ingress interface is configured, since
+    ingress without the default-deny would admit the whole LAN too."""
+    return bool(ingress_interfaces(cfg)) or host.read_text(FIREWALL_PATH) is not None
+
+
 def require_firewall(cfg: dict) -> None:
-    """Raises unless the ingress firewall is in force for the current config."""
+    """Raises when the firewall is opted in but not in force for this config.
+    Does nothing for a host that never opted in."""
     _require_eligible(cfg)
+    if not firewall_opted_in(cfg):
+        return
     if not firewall_installed_matches(cfg):
         raise AsbxError(f"{FIREWALL_PATH} is missing or out of date for this config; "
                         "run 'asbx ingress setup' to install the ingress firewall")

@@ -114,17 +114,20 @@ def cmd_doctor(incus: Incus, cfg: Optional[dict], fix: bool) -> int:
     for name, why in interface_problems.items():
         check(f"ingress interface {name}", False,
               f"it {why}; 'asbx up' and 'asbx ingress setup' refuse it", warn_cond=True)
-    firewall_ok = ingress.firewall_installed_matches(cfg) and ingress.firewall_unit_active()
-    if not firewall_ok and fix and not interface_problems:
-        try:
-            ingress.install(cfg, yes=False, print_only=False)
-        except AsbxError as e:
-            ui.warn(f"--fix could not install the ingress firewall: {e}")
-    fix_hint = "" if fix else "; run 'asbx ingress setup' (or doctor --fix)"
-    check(f"{ingress.FIREWALL_PATH} matches config", ingress.firewall_installed_matches(cfg),
-          f"missing or out of date; 'asbx up' refuses until it matches{fix_hint}")
-    check(f"{ingress.UNIT_NAME} active", ingress.firewall_unit_active(),
-          f"the inbound default-deny is not loaded at boot{fix_hint}")
+    if ingress.firewall_opted_in(cfg):
+        firewall_ok = ingress.firewall_installed_matches(cfg) and ingress.firewall_unit_active()
+        if not firewall_ok and fix and not interface_problems:
+            try:
+                ingress.install(cfg, yes=False, print_only=False)
+            except AsbxError as e:
+                ui.warn(f"--fix could not install the ingress firewall: {e}")
+        fix_hint = "" if fix else "; run 'asbx ingress setup' (or doctor --fix)"
+        check(f"{ingress.FIREWALL_PATH} matches config", ingress.firewall_installed_matches(cfg),
+              f"missing or out of date; 'asbx up' refuses until it matches{fix_hint}")
+        check(f"{ingress.UNIT_NAME} active", ingress.firewall_unit_active(),
+              f"the inbound default-deny is not loaded at boot{fix_hint}")
+    else:
+        results.append(("PASS", "ingress firewall not installed (opt-in: 'asbx ingress setup')"))
     managed = ingress.managed_interface(cfg)
     if managed:
         check(f"wg-quick@{managed} active", ingress.unit_active(f"wg-quick@{managed}"),

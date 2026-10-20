@@ -33,9 +33,10 @@ for PyYAML, then calls `cli.main`. This is the stdlib plus PyYAML only.
 - **Egress fails closed.** `netacl.apply_nic_acl` raises if Incus can't
   attach the ACL. Never add a guest-side fallback
   ([ADR 0003](../docs/adr/0003-per-nic-egress-acl-fail-closed.md)).
-- **Ingress fails closed.** `up` refuses unless the firewall unit is active
-  and its file matches the config, and raises if Incus won't pin or filter
-  the NIC ([ADR 0005](../docs/adr/0005-host-enforced-ingress.md)).
+- **Ingress fails closed once opted in.** `up` refuses unless the firewall
+  unit is active and its file matches the config, whenever the file is
+  installed or an ingress interface is configured. It raises if Incus won't
+  pin or filter the NIC ([ADR 0005](../docs/adr/0005-host-enforced-ingress.md)).
 - **The firewall table is asbx-owned.** asbx writes only `inet asbx`, and
   replaces it whole. Never add rules to Incus's or other tables.
 - **No guest data in host SSH config, client configs or pinned IPs.**

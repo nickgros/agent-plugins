@@ -29,8 +29,10 @@ packet; nothing in the guest is an access control. This supersedes ADR
 
 ## Consequences
 
-- Default-deny applies with zero ingress interfaces. Closing the forwarding
-  gap does not depend on opting in.
+- The default-deny is opt-in. It applies once `asbx ingress setup` installs
+  it, with or without ingress interfaces, and it is required whenever any
+  ingress interface is configured. A host that never opts in keeps the
+  forwarding gap: Incus accepts anything routed into the bridge.
 - The ruleset lives in `/etc/asbx/firewall.nft` and is loaded at boot by
   `asbx-firewall.service`, before Incus starts. Unprivileged asbx can't list
   nftables, so `up` checks that the unit is active and the installed file
