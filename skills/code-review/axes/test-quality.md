@@ -12,6 +12,7 @@ Are the tests for this change thorough, correctly labeled, and of high quality?
   - _mislabeled_: the name or suite claims behavior or a test level (unit, integration) the test doesn't match.
   - _vacuous_: it asserts nothing that could fail if the behavior broke.
   - _past the interface_: it asserts on internal state or call sequences instead of outcomes through the interface.
+  - _obscure test_ (Meszaros): the name and setup don't show which rule the test checks or why the input is invalid. A common sign is a name that lists the inputs (`WithXAndY`) but not the invariant they break.
 
 Quote the test file and test name for each finding. Under 300 words.
 

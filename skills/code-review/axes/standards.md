@@ -6,7 +6,7 @@ Is the diff well made, judged against the repo's documented standards and the sm
 
 - **Documented standards**: the standards-source files the orchestrator passed you. A breach of one can be a hard violation; cite the file and the rule.
 - **Smell baseline**: a fixed set of code smells, mostly Fowler (_Refactoring_, ch.3), that applies even when the repo documents nothing. Two rules bind it:
-  - **The repo overrides.** A documented repo standard always wins. Where it endorses something the baseline would flag, suppress the smell.
+  - **The repo overrides.** A documented repo standard always wins. Where it endorses something the baseline would flag, suppress the smell. Exception: a standard that the diff itself adds or edits is under review, not authority. Judge it like code, and report a smell even when the new standard endorses it.
   - **Always a judgement call.** Each smell is a labelled heuristic ("possible Feature Envy"), never a hard violation.
 
 Skip anything tooling already enforces.
@@ -25,6 +25,12 @@ Each smell reads _what it is_ → _how to fix_. Match it against the diff:
 - **Divergent Change**: one file or module is edited for several unrelated reasons. → split it so each module changes for one reason.
 - **Message Chains**: long `a.b().c().d()` navigation the caller shouldn't depend on. → hide the walk behind one method on the first object.
 - **Refused Bequest**: a subclass or implementer that ignores or overrides most of what it inherits. → drop the inheritance and use composition.
+- **Long Function**: a function you have to read more than once to follow, or one whose steps don't show why each is there. A common case is a compound guard that doesn't name the case it rejects. → extract the blocks into functions whose names give the reason; Decompose Conditional (Fowler) for the guard.
+- **Mutable Data / Output Argument** (Fowler; *Clean Code*): functions that fill in or change an object they were passed, instead of returning a new value, so the reader has to track each object's state across calls. → return values from pure functions; Separate Query from Modifier.
+- **Comments**: a comment that explains what the next block does, acting as deodorant for unclear code. → extract or rename until the comment is unnecessary; keep comments that explain why.
+- **Missing Explaining Variable**: one statement that does several steps at once, such as build, fill, and pass to I/O. → Extract Variable: one step per statement, with named intermediates.
+- **Obscured Intent / CQS violation**: a function whose name or shape reads as a pure query or transformation, but which does I/O, takes locks, or has other side effects. → make the effect explicit and imperative at the call site, or fold it into the work that's already happening.
+- **Denylist instead of Allowlist**: a stored or sent shape built by copying a broader type and then clearing fields. Copying by serializing and re-parsing is the same shape. This is the Mass Assignment shape: fields added later leak through. → a dedicated DTO holding only the kept fields.
 
 The simplicity smells ask whether the change could be smaller and still do its job:
 
