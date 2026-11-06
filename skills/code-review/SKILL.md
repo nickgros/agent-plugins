@@ -18,8 +18,6 @@ Review the diff between `HEAD` and a fixed point the user supplies. Each axis ru
 
 The brief for each axis is `axes/<axis>.md` (`test-quality.md` for Test Quality), relative to this skill's directory.
 
-The issue tracker should have been provided to you. If `docs/agents/issue-tracker.md` is missing, tell the user to run `/setup-matt-pocock-skills`.
-
 ## Process
 
 ### 1. Pin the fixed point
@@ -34,7 +32,7 @@ Before going further, confirm the fixed point resolves (`git rev-parse <fixed-po
 
 Look for the originating spec, in this order:
 
-1. Issue references in the commit messages (`#123`, `Closes #45`, GitLab `!67`, etc.), fetched via the workflow in `docs/agents/issue-tracker.md`.
+1. Issue references in the commit messages (`#123`, `Closes #45`, GitLab `!67`, etc.), fetched with the `/issue-tracker` skill when it is present.
 2. A path the user passed as an argument.
 3. A spec file under `docs/`, `specs/`, or `.scratch/` matching the branch name or feature.
 4. If nothing is found, ask the user where the spec is. If they say there isn't one, Spec is skipped with "no spec available".
