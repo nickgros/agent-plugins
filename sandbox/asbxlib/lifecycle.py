@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sys
 from datetime import datetime, timezone
 from typing import Optional
@@ -15,6 +16,7 @@ from . import sshconf
 from . import ui
 from . import up
 from . import manifest as manifest_mod
+from . import provision
 
 
 # ---------------------------------------------------------------------------
@@ -185,10 +187,47 @@ def cmd_restore(incus: Incus, cfg: dict, group: str, label: str, yes: bool) -> N
     ui.ok(f"{instance} restored to {label}")
 
 
+def parse_worktree_list(porcelain: str) -> list[str]:
+    """Work-tree paths from `git worktree list --porcelain`. Bare entries have
+    no work tree and prunable ones no longer exist on disk."""
+    paths = []
+    for block in porcelain.strip().split("\n\n"):
+        fields = block.splitlines()
+        if not fields or not fields[0].startswith("worktree "):
+            continue
+        if any(f == "bare" or f == "prunable" or f.startswith("prunable ") for f in fields[1:]):
+            continue
+        paths.append(fields[0][len("worktree "):])
+    return paths
+
+
+def _find_path_pattern(path: str) -> str:
+    """`path` as a literal `find -path` pattern."""
+    return re.sub(r"([\\*?\[])", r"\\\1", path)
+
+
+# Args: workspace dir, guide name, guide marker, then `find -path` patterns
+# for every repo and worktree. Prints, for each top-level workspace entry, one
+# file under it that lies in no repo: a rebuild cannot recreate those.
+# Directories, and the guide when asbx generated it, are recreated by
+# provision. Exits non-zero when find cannot read everything.
+UNRECOVERABLE_SCRIPT = provision.GUIDE_IS_GENERATED_SH + r"""
+set -o pipefail
+ws=$1; guide=$2; marker=$3; shift 3
+args=()
+for p in "$@"; do args+=(-path "$p" -prune -o); done
+if guide_is_generated "$ws/$guide" "$marker"; then args+=(-path "$ws/$guide" -prune -o); fi
+find "$ws" -mindepth 1 "${args[@]}" ! -type d -print |
+  awk -v n="${#ws}" '{ rel = substr($0, n + 2); top = rel; sub(/\/.*/, "", top);
+                       if (!(top in seen)) { seen[top] = 1; print rel } }'
+"""
+
+
 def find_unsafe_repos(incus: Incus, instance: str, group: str, guest_user: str) -> list[str]:
-    """Everything under /workspace whose loss a rebuild would cause. Repos are
-    found wherever .git appears within three levels, so a `<repo>.worktrees/`
-    directory is checked through the worktrees inside it, not as one repo."""
+    """Everything whose loss a rebuild would cause: each repo found within
+    three levels of /workspace, plus every worktree git has registered for
+    one, wherever it lives (e.g. /workspace/worktrees/<repo>/<branch>, or omp's
+    ~/.omp/wt)."""
     # An unreadable /workspace must never be mistaken for "no repos to lose":
     # that would let rebuild destroy unpushed work unwarned.
     listing = incus.exec_in(instance, ["bash", "-c", "ls -1 /workspace"],
@@ -199,26 +238,59 @@ def find_unsafe_repos(incus: Incus, instance: str, group: str, guest_user: str) 
             f"{instance}: cannot list /workspace (state={state}); "
             f"start it first ('asbx start {group}') so rebuild can check for unsaved work"
         )
-    top_dirs = [d for d in listing.stdout.splitlines() if d.strip()]
     found = incus.exec_in(instance, ["find", "/workspace", "-maxdepth", "3", "-name", ".git",
                                       "-printf", "%h\\n"], user=guest_user, check=False)
-    repo_roots = sorted({r for r in (found.stdout or "").splitlines() if r.startswith("/workspace/")})
-
+    found_roots = {r for r in (found.stdout or "").splitlines() if r.startswith("/workspace/")}
+    repo_roots = set(found_roots)
+    # Worktrees share their repository's branches, so `git log --branches`
+    # runs once per repository: from the first entry git lists for it, which
+    # is the main working tree unless that is bare.
+    log_roots: set[str] = set()
+    listed: set[str] = set()
     blocking = []
-    for top in top_dirs:
-        prefix = f"/workspace/{top}"
-        if not any(r == prefix or r.startswith(prefix + "/") for r in repo_roots):
-            blocking.append(f"{top}: not a git repository — contents cannot be recovered")
-    for root in repo_roots:
-        name = root[len("/workspace/"):]
+    for root in sorted(found_roots):
+        if root in listed:
+            continue
+        proc = incus.exec_in(instance, ["git", "-C", root, "worktree", "list", "--porcelain"],
+                             user=guest_user, check=False)
+        if proc.returncode != 0:
+            blocking.append(f"{root[len('/workspace/'):]}: cannot list its worktrees — "
+                            f"their work cannot be checked")
+            log_roots.add(root)
+            continue
+        worktrees = parse_worktree_list(proc.stdout) or [root]
+        repo_roots.update(worktrees)
+        listed.update(worktrees)
+        log_roots.add(worktrees[0])
+
+    # Registered worktrees can sit next to anything (one shared worktrees/
+    # dir holds every repo's), so the check covers every file outside a repo
+    # rather than whole top-level entries.
+    checked = incus.exec_in(instance, ["bash", "-c", UNRECOVERABLE_SCRIPT, "_", "/workspace",
+                                       manifest_mod.GUIDE_NAME, provision.GUIDE_MARKER,
+                                       *(_find_path_pattern(r) for r in sorted(repo_roots))],
+                            user=guest_user, check=False)
+    if checked.returncode != 0:
+        blocking.append("/workspace: cannot check it for files outside git repositories — "
+                        "they could be lost")
+    for rel in sorted((checked.stdout or "").splitlines()) if checked.returncode == 0 else []:
+        top = rel.split("/", 1)[0]
+        blocking.append(f"{top}: not a git repository — contents cannot be recovered" if rel == top else
+                        f"{top}: holds files outside any git repository (e.g. {rel}) — "
+                        f"they cannot be recovered")
+
+    for root in sorted(repo_roots):
+        name = root[len("/workspace/"):] if root.startswith("/workspace/") else root
         status = incus.exec_in(instance, ["git", "-C", root, "status", "--porcelain"],
                                user=guest_user, check=False)
         remote = incus.exec_in(instance, ["git", "-C", root, "remote"],
                                user=guest_user, check=False)
-        unpushed = incus.exec_in(instance, ["git", "-C", root, "log", "--branches", "--not",
-                                             "--remotes", "--oneline"],
-                                 user=guest_user, check=False)
-        msg = classify_repo(name, status.stdout, remote.stdout, unpushed.stdout)
+        unpushed = ""
+        if root in log_roots:
+            unpushed = incus.exec_in(instance, ["git", "-C", root, "log", "--branches", "--not",
+                                                 "--remotes", "--oneline"],
+                                     user=guest_user, check=False).stdout
+        msg = classify_repo(name, status.stdout, remote.stdout, unpushed)
         if msg:
             blocking.append(msg)
     return blocking

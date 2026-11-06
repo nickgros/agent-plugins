@@ -45,10 +45,13 @@ Steps, in order:
 These re-run one phase. `auth` skips the providers that are already
 satisfied. `provision` does the following:
 
-1. For each repo, in order: clones it if missing, reconciles its remotes,
+1. Creates `/workspace/worktrees/<dir>` for each repo.
+2. For each repo, in order: clones it if missing, reconciles its remotes,
    and runs its `setup` (on the first clone only).
-2. Runs `docker compose up -d`.
-3. Runs the setup hook.
+3. Writes the workspace guide, `/workspace/AGENTS.md`
+   ([manifests: workspace guide](manifest.md#workspace-guide)).
+4. Runs `docker compose up -d`.
+5. Runs the setup hook.
 
 ### `start` / `stop` / `restart <group>`
 
@@ -60,12 +63,24 @@ If it never does, they warn and suggest `asbx doctor`.
 ### `rebuild <group> [--force] [--yes]`
 
 Runs `rm` then `up` with the current manifest. You confirm by typing the
-group name; `--yes` skips the prompt. First it classifies every entry under
-`/workspace` and refuses if any repo is dirty, has no remote, or has
-unpushed commits. `--force` overrides that refusal. It always refuses if
-`/workspace` can't be listed (for example because the sandbox is stopped),
-rather than treating that as "no repos". The new sandbox keeps the old one's
-pinned IPv4 address, set before its first start.
+group name; `--yes` skips the prompt. First it checks for work the rebuild
+would lose, and refuses if it finds any:
+
+- **Repos:** every repo found within three levels of `/workspace`, plus
+  every worktree git has registered for one, wherever it lives. Each one
+  that is dirty or has no remote blocks. Unpushed commits block once per
+  repository, reported under its main checkout. A repo whose worktrees
+  can't be listed blocks too.
+- **Files outside repos:** any file under `/workspace` that is in none of
+  those repos blocks, with one example named per top-level entry. Empty
+  directories and the generated `AGENTS.md` don't count, since provision
+  recreates them. If the guest can't run this check fully (an unreadable
+  directory, say), rebuild refuses.
+
+`--force` overrides the refusal. It always refuses if `/workspace` can't be
+listed (for example because the sandbox is stopped), rather than treating
+that as "no repos". The new sandbox keeps the old one's pinned IPv4
+address, set before its first start.
 
 ### `rm <group> [--yes]`
 

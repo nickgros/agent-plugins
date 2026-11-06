@@ -21,7 +21,7 @@ for PyYAML, then calls `cli.main`. This is the stdlib plus PyYAML only.
 | `auth.py`        | Auth providers (`github-gh`, `aws-creds`, inline `{command, check}`)                                       |
 | `awscreds.py`    | Export host AWS credentials, push them into guests, `aws-refresh`, systemd user timer and path unit        |
 | `harnesssync.py` | Push host harness settings (omp config, rules, hooks) into guests; `settings-sync`                         |
-| `provision.py`   | Clone, remotes, compose, setup hook                                                                        |
+| `provision.py`   | Clone, remotes, worktree dirs, workspace guide (`/workspace/AGENTS.md`), compose, setup hook               |
 | `lifecycle.py`   | `list`, `ssh`, `shell`, start/stop/restart, snapshot/restore, `rebuild` (repo safety), `rm`                |
 | `doctor.py`      | `doctor` checks and `--fix`                                                                                |
 | `netcheck.py`    | Black-box guest network probes used by `doctor`                                                            |

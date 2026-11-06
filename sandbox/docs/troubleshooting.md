@@ -47,9 +47,11 @@ interface, ethernet and wlan are not. Remove the entry from
 
 ## `rebuild refused, unsafe repos`
 
-Every entry under `/workspace` that is dirty, has no remote, or has commits
-on no remote blocks `rebuild`. Push or stash the work, or copy it out with
-`incus file pull -r <instance>/workspace/<dir> <dest>`, then use `--force`.
+Every repo under `/workspace` or worktree registered for one that is dirty,
+has no remote, or has commits on no remote blocks `rebuild`, as does any
+`/workspace` entry holding files outside a repo. Push or stash the work, or
+copy it out with `incus file pull -r <instance>/workspace/<dir> <dest>`, then
+use `--force`.
 
 ## Config error: unknown key
 

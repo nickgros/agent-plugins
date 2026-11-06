@@ -16,7 +16,7 @@ from .errors import AsbxError
 # ---------------------------------------------------------------------------
 
 MANIFEST_KEYS = {
-    "name", "resources", "repos", "mounts", "services", "env", "auth", "setup", "remotes",
+    "name", "resources", "repos", "mounts", "services", "env", "auth", "setup", "guide", "remotes",
     "tools", "aws_profiles", "harness_credentials",
 }
 REPO_KEYS = {"url", "dir", "ref", "setup", "remotes"}
@@ -24,6 +24,11 @@ MOUNT_KEYS = {"host", "guest", "mode"}
 RESOURCE_KEYS = {"cpu", "memory", "disk"}
 SERVICES_KEYS = {"compose"}
 MEMORY_RE = re.compile(r"^\d+(MiB|GiB)$")
+# /workspace entries asbx owns (provision's worktree root and generated guide),
+# so no repo may clone into them.
+WORKTREES_NAME = "worktrees"
+GUIDE_NAME = "AGENTS.md"
+RESERVED_WORKSPACE_NAMES = {WORKTREES_NAME, GUIDE_NAME}
 
 
 @dataclass(frozen=True)
@@ -58,6 +63,7 @@ class Manifest:
     env: dict[str, str] = field(default_factory=dict)
     auth: list[Any] = field(default_factory=list)
     setup_path: Optional[str] = None
+    guide_path: Optional[str] = None
     remotes: dict[str, str] = field(default_factory=dict)
     aws_profiles: list[str] = field(default_factory=list)
     harness_credentials: list[Any] = field(default_factory=list)
@@ -107,6 +113,8 @@ def validate_manifest_dict(data: dict, manifest_path: str) -> dict:
         d = repo_dir(repo)
         if d in seen_dirs:
             raise AsbxError(f"manifest {manifest_path}: duplicate repos[*].dir '{d}'")
+        if d in RESERVED_WORKSPACE_NAMES:
+            raise AsbxError(f"manifest {manifest_path}: repos[*].dir '{d}' is reserved in /workspace")
         seen_dirs.add(d)
 
     _validate_remotes_dict(data.get("remotes"), manifest_path, "remotes")
@@ -137,7 +145,7 @@ def validate_manifest_dict(data: dict, manifest_path: str) -> dict:
                 raise AsbxError(f"manifest {manifest_path}: unknown key 'services.{k}'")
 
     manifest_dir = os.path.dirname(os.path.realpath(manifest_path))
-    for field in ("services", "setup"):
+    for field in ("services", "setup", "guide"):
         val = data.get(field)
         if field == "services" and isinstance(val, dict):
             val = val.get("compose")
@@ -267,6 +275,9 @@ def load_manifest(group: str, cfg: dict) -> Manifest:
     setup_path = None
     if data.get("setup"):
         setup_path = str(manifest_dir / data["setup"])
+    guide_path = None
+    if data.get("guide"):
+        guide_path = str(manifest_dir / data["guide"])
 
     return Manifest(
         path=str(path),
@@ -279,6 +290,7 @@ def load_manifest(group: str, cfg: dict) -> Manifest:
         env=env,
         auth=auth,
         setup_path=setup_path,
+        guide_path=guide_path,
         remotes=global_remotes,
         aws_profiles=aws_profiles,
         harness_credentials=harness_credentials,

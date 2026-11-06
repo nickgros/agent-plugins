@@ -108,6 +108,18 @@ def test_manifest_setup_missing_file_rejected(tmp_path):
         manifest.validate_manifest_dict({"setup": "setup.sh"}, str(tmp_path / "demo.yaml"))
 
 
+def test_manifest_guide_escaping_manifest_dir_rejected(tmp_path):
+    with pytest.raises(AsbxError, match="'guide' escapes manifest directory"):
+        manifest.validate_manifest_dict({"guide": "../notes.md"}, str(tmp_path / "demo.yaml"))
+
+
+@pytest.mark.parametrize("d", ["worktrees", "AGENTS.md"])
+def test_manifest_repo_dir_cannot_be_an_asbx_owned_workspace_entry(d):
+    data = {"repos": [{"url": "https://example.com/foo.git", "dir": d}]}
+    with pytest.raises(AsbxError, match=f"'{d}' is reserved"):
+        manifest.validate_manifest_dict(data, "/tmp/demo.yaml")
+
+
 # ---------------------------------------------------------------------------
 # merge_resources / merge_mounts
 # ---------------------------------------------------------------------------

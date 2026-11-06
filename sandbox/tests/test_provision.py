@@ -1,6 +1,8 @@
 """Tests for asbxlib.provision: run_provision and configure_repo_remotes."""
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 from fake_incus import FakeIncus
 
@@ -190,3 +192,118 @@ def test_setup_hook_runs_as_a_login_shell(tmp_path):
     provision.run_provision(fake, "sandbox-demo", _manifest(tmp_path, setup_path=str(hook)), "agent")
 
     assert any("bash -l /home/agent/.asbx/provision.sh" in c for c in _calls(fake))
+
+
+def _guide_repos():
+    return [
+        Repo(url="https://github.com/me/api.git", dir="api", ref="develop", setup="pnpm install",
+             remotes={"upstream": "Org"}),
+        Repo(url="https://github.com/me/web.git", dir="web", ref=None, setup=None, remotes={}),
+    ]
+
+
+def test_provision_creates_a_worktree_dir_per_repo(tmp_path):
+    fake = FakeIncus()
+
+    provision.run_provision(fake, "sandbox-demo", _manifest(tmp_path, repos=_guide_repos()), "agent")
+
+    mkdir = next(c for c in _calls(fake) if "mkdir -p /workspace" in c)
+    assert "/workspace/worktrees/api" in mkdir and "/workspace/worktrees/web" in mkdir
+
+
+def test_guide_bases_worktrees_on_upstream_when_the_repo_has_it():
+    repo = Repo(url="https://github.com/me/api.git", dir="api", ref="develop", setup=None,
+                remotes={"upstream": "Org"})
+
+    guide = provision.render_workspace_guide(_manifest(repos=[repo]), {"api": "develop"}, None)
+
+    assert "| `api` | `/workspace/api` | origin, upstream | `upstream/develop` | `/workspace/worktrees/api/` |" in guide
+
+
+def test_guide_lists_each_repo_and_the_worktree_command(tmp_path):
+    fake = FakeIncus()
+    fake.stub("git", "-C", "/workspace/web", "symbolic-ref", stdout="origin/main\n")
+
+    provision.run_provision(fake, "sandbox-demo", _manifest(tmp_path, repos=_guide_repos()), "agent")
+
+    guide = fake.pushed[provision.GUIDE_PATH]
+    assert guide.startswith(provision.GUIDE_MARKER + "\n")
+    assert ("| `api` | `/workspace/api` | origin, upstream | `upstream/develop` | "
+            "`/workspace/worktrees/api/` | `pnpm install` |") in guide
+    assert "| `web` | `/workspace/web` | origin | `origin/main` | `/workspace/worktrees/web/` | — |" in guide
+    assert ("git -C /workspace/<repo> worktree add --no-track -b <branch> "
+            "/workspace/worktrees/<repo>/<slug> <base>") in guide
+    assert "## Project notes" not in guide
+
+
+def test_guide_without_a_ref_uses_the_clone_default_branch_on_upstream(tmp_path):
+    repo = Repo(url="https://github.com/me/web.git", dir="web", ref=None, setup=None, remotes={"upstream": "Org"})
+    fake = FakeIncus()
+    fake.stub("symbolic-ref", stdout="origin/trunk\n")
+
+    provision.run_provision(fake, "sandbox-demo", _manifest(tmp_path, repos=[repo]), "agent")
+
+    assert "`upstream/trunk`" in fake.pushed[provision.GUIDE_PATH]
+
+
+def test_guide_falls_back_to_a_placeholder_and_warns_when_origin_head_is_unset(tmp_path, capsys):
+    fake = FakeIncus()
+    fake.stub("symbolic-ref", rc=1)
+
+    provision.run_provision(fake, "sandbox-demo", _manifest(tmp_path, repos=_guide_repos()), "agent")
+
+    assert "`origin/<default branch>`" in fake.pushed[provision.GUIDE_PATH]
+    assert "warning: repo web: origin/HEAD is not set" in capsys.readouterr().err
+
+
+def test_guide_appends_the_manifest_notes_file(tmp_path):
+    notes = tmp_path / "notes.md"
+    notes.write_text("Open PRs against Org.\n\n")
+    fake = FakeIncus()
+
+    provision.run_provision(fake, "sandbox-demo", _manifest(tmp_path, guide_path=str(notes)), "agent")
+
+    assert fake.pushed[provision.GUIDE_PATH].endswith("## Project notes\n\nOpen PRs against Org.\n")
+
+
+def test_guide_is_not_written_and_provision_warns_when_the_guest_says_it_is_not_ours(tmp_path, capsys):
+    fake = FakeIncus()
+    fake.stub("guide_is_generated", rc=1)
+
+    provision.run_provision(fake, "sandbox-demo", _manifest(tmp_path, repos=_guide_repos()), "agent")
+
+    assert provision.GUIDE_PATH not in fake.pushed
+    assert "warning: /workspace/AGENTS.md was not written by asbx" in capsys.readouterr().err
+
+
+def _guide_writable(path) -> bool:
+    return subprocess.run(["bash", "-c", provision.GUIDE_WRITABLE_SCRIPT, "_", str(path),
+                           provision.GUIDE_MARKER]).returncode == 0
+
+
+def test_guide_writable_script_accepts_a_missing_or_generated_file(tmp_path):
+    guide = tmp_path / "AGENTS.md"
+    assert _guide_writable(guide)
+    guide.write_text(provision.GUIDE_MARKER + "\n# old\n")
+    assert _guide_writable(guide)
+
+
+@pytest.mark.parametrize("body", ["# mine\n" + provision.GUIDE_MARKER + "\n", provision.GUIDE_MARKER + " \n", ""])
+def test_guide_writable_script_refuses_a_file_asbx_did_not_write(tmp_path, body):
+    guide = tmp_path / "AGENTS.md"
+    guide.write_text(body)
+    assert not _guide_writable(guide)
+
+
+def test_guide_writable_script_refuses_a_dangling_symlink(tmp_path):
+    guide = tmp_path / "AGENTS.md"
+    guide.symlink_to(tmp_path / "elsewhere")
+    assert not _guide_writable(guide)
+
+
+def test_guide_escapes_pipes_in_table_cells():
+    repo = Repo(url="https://github.com/me/api.git", dir="api", ref="main", setup="make || true", remotes={})
+
+    guide = provision.render_workspace_guide(_manifest(repos=[repo]), {"api": "main"}, None)
+
+    assert "`make \\|\\| true`" in guide

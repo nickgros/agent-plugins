@@ -1,10 +1,14 @@
 """Tests for asbxlib.lifecycle. No Incus required."""
 from __future__ import annotations
 
+import os
+import subprocess
+
 import pytest
 
 from asbxlib import lifecycle
 from asbxlib import manifest
+from asbxlib import provision
 from asbxlib.errors import AsbxError
 
 from fake_incus import FakeIncus
@@ -176,29 +180,111 @@ def test_cmd_restore_from_a_copy_puts_the_pinned_address_back_before_starting(mo
     assert pins == [("10.210.86.192", False)]
 
 
-def _clean_pushed_fake(ls: str, found: str) -> FakeIncus:
+def _clean_pushed_fake(ls: str, found: str, unrecoverable: str = "", unrecoverable_rc: int = 0,
+                       unpushed: str = "") -> FakeIncus:
     fake = FakeIncus()
     fake.set_instance(exists=True)
     fake.stub("ls", "-1", stdout=ls)
-    fake.stub("find", "/workspace", stdout=found)
-    fake.stub("git", "-C", "log", stdout="")
+    fake.stub("-prune", rc=unrecoverable_rc, stdout=unrecoverable)   # UNRECOVERABLE_SCRIPT
+    fake.stub("find", "/workspace", "-maxdepth", stdout=found)
+    fake.stub("git", "-C", "log", stdout=unpushed)
     fake.stub("git", "-C", "remote", stdout=REMOTE + "\n")
     return fake
 
 
-def test_find_unsafe_repos_checks_worktrees_inside_a_worktrees_directory():
-    fake = _clean_pushed_fake("r.worktrees\n", "/workspace/r.worktrees/feat\n/workspace/r.worktrees/fix\n")
-    fake.stub("git", "-C", "/workspace/r.worktrees/fix", "status", "--porcelain", stdout=" M x\n")
+def test_find_unsafe_repos_checks_registered_worktrees_beyond_the_find_depth():
+    fake = _clean_pushed_fake("r\nworktrees\n", "/workspace/r\n")
+    fake.stub("git", "-C", "/workspace/r", "worktree", "list", stdout=(
+        "worktree /workspace/r\nHEAD 1\nbranch refs/heads/main\n\n"
+        "worktree /workspace/worktrees/r/feat-x\nHEAD 2\nbranch refs/heads/feat/x\n\n"
+        "worktree /home/agent/.omp/wt/7-abc\nHEAD 3\ndetached\n"))
+    fake.stub("git", "-C", "/workspace/worktrees/r/feat-x", "status", stdout=" M x\n")
+    fake.stub("git", "-C", "/home/agent/.omp/wt/7-abc", "status", stdout="?? y\n")
 
     assert lifecycle.find_unsafe_repos(fake, "sandbox-demo", "demo", "agent") == [
-        "r.worktrees/fix: dirty (uncommitted changes)"]
+        "/home/agent/.omp/wt/7-abc: dirty (uncommitted changes)",
+        "worktrees/r/feat-x: dirty (uncommitted changes)"]
 
 
-def test_find_unsafe_repos_flags_a_directory_that_is_not_a_repo():
-    fake = _clean_pushed_fake("scratch\nmyrepo\n", "/workspace/myrepo\n")
+def test_find_unsafe_repos_blocks_when_a_repo_cannot_list_its_worktrees():
+    fake = _clean_pushed_fake("r\n", "/workspace/r\n")
+    fake.stub("worktree", "list", rc=128)
 
     assert lifecycle.find_unsafe_repos(fake, "sandbox-demo", "demo", "agent") == [
-        "scratch: not a git repository — contents cannot be recovered"]
+        "r: cannot list its worktrees — their work cannot be checked"]
+
+
+def test_find_unsafe_repos_reports_unpushed_commits_once_per_repository_from_its_main_checkout():
+    # Every root would report if asked; the worktree sorts first, so naming the
+    # main checkout is not an accident of order.
+    fake = _clean_pushed_fake("a-wt\nz\n", "/workspace/a-wt\n/workspace/z\n", unpushed="abc1 wip\n")
+    fake.stub("/workspace/a-wt", "worktree", "list", stdout=(
+        "worktree /workspace/z\nHEAD 1\nbranch refs/heads/main\n\n"
+        "worktree /workspace/a-wt\nHEAD 2\nbranch refs/heads/a\n"))
+
+    assert lifecycle.find_unsafe_repos(fake, "sandbox-demo", "demo", "agent") == ["z: unpushed commits"]
+
+
+def test_find_unsafe_repos_names_each_entry_holding_files_outside_any_repo():
+    fake = _clean_pushed_fake("scratch\nworktrees\n", "", unrecoverable="scratch\nworktrees/web/notes.md\n")
+
+    assert lifecycle.find_unsafe_repos(fake, "sandbox-demo", "demo", "agent") == [
+        "scratch: not a git repository — contents cannot be recovered",
+        "worktrees: holds files outside any git repository (e.g. worktrees/web/notes.md) — "
+        "they cannot be recovered"]
+
+
+def test_find_unsafe_repos_blocks_when_the_guest_cannot_check_for_files_outside_repos():
+    fake = _clean_pushed_fake("scratch\n", "", unrecoverable="scratch\n", unrecoverable_rc=1)
+
+    assert lifecycle.find_unsafe_repos(fake, "sandbox-demo", "demo", "agent") == [
+        "/workspace: cannot check it for files outside git repositories — they could be lost"]
+
+
+def _run_unrecoverable(workspace, *repo_roots) -> subprocess.CompletedProcess:
+    return subprocess.run(["bash", "-c", lifecycle.UNRECOVERABLE_SCRIPT, "_", str(workspace),
+                           provision.GUIDE_NAME, provision.GUIDE_MARKER,
+                           *(lifecycle._find_path_pattern(str(workspace / r)) for r in repo_roots)],
+                          capture_output=True, text=True)
+
+
+def test_unrecoverable_script_reports_one_file_per_entry_outside_repos(tmp_path):
+    for d in ("r", "[r]", "worktrees/r/a", "worktrees/empty"):
+        (tmp_path / d).mkdir(parents=True)
+    for f in ("r/src.py", "[r]/src.py", "worktrees/r/a/src.py", "worktrees/web/notes.md", "-n"):
+        (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / f).write_text("x")
+    (tmp_path / "AGENTS.md").write_text(provision.GUIDE_MARKER + "\n# Workspace\n")
+
+    proc = _run_unrecoverable(tmp_path, "r", "[r]", "worktrees/r/a")
+
+    assert proc.returncode == 0
+    assert sorted(proc.stdout.splitlines()) == ["-n", "worktrees/web/notes.md"]
+
+
+def test_unrecoverable_script_reports_a_hand_written_guide(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("# my notes\n" + provision.GUIDE_MARKER + "\n")
+
+    assert _run_unrecoverable(tmp_path).stdout.splitlines() == ["AGENTS.md"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads unreadable directories")
+def test_unrecoverable_script_fails_when_a_directory_cannot_be_read(tmp_path):
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0)
+    try:
+        assert _run_unrecoverable(tmp_path).returncode != 0
+    finally:
+        locked.chmod(0o755)
+
+
+def test_parse_worktree_list_skips_bare_and_prunable_entries():
+    porcelain = ("worktree /srv/r.git\nbare\n\n"
+                 "worktree /w/a\nHEAD 1\nbranch refs/heads/a\n\n"
+                 "worktree /w/b\nHEAD 2\nprunable gitdir file points to non-existent location\n\n"
+                 "worktree /w/c\nHEAD 3\nlocked\n")
+    assert lifecycle.parse_worktree_list(porcelain) == ["/w/a", "/w/c"]
 
 
 def test_cmd_rebuild_refuses_when_workspace_cannot_be_listed(monkeypatch, cfg):

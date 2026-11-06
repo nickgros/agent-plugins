@@ -9,8 +9,9 @@ into a host one.
 ## Consequences
 
 - Work in progress exists only on the VM's disk until it is pushed. `rebuild`
-  refuses to delete a sandbox while any repo is dirty, has no remote, or has
-  unpushed commits, and it refuses when it can't list `/workspace` at all.
+  refuses to delete a sandbox while any repo or registered worktree is dirty,
+  has no remote, or has unpushed commits, and it refuses when it can't list
+  `/workspace` at all.
 - IDEs edit over SSH (Remote-SSH, Gateway) rather than on host files.
 - A mount source must be world-readable, because guest uids don't map to
   host uids ([security model](../security.md#host-files)).

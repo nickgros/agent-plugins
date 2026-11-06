@@ -16,7 +16,7 @@ All keys are optional.
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `name`               | Instance name suffix (instance is `<instance_prefix><name>`). Defaults to the file stem.                                               |
 | `resources`          | `cpu` (int), `memory` and `disk` (`^\d+(MiB\|GiB)$`). Merged over `defaults.resources`.                                                |
-| `repos`              | Repos cloned into `/workspace/<dir>`. See [below](#repos).                                                                             |
+| `repos`              | Repos cloned into `/workspace/<dir>`, with worktrees under `/workspace/worktrees/<dir>/`. See [below](#repos).                         |
 | `remotes`            | Remotes for every repo, merged over `defaults.remotes`. See [below](#remotes).                                                         |
 | `mounts`             | Read-only host mounts: `{host, guest, mode: ro}`. Merged with `defaults.mounts` by `guest` path; a manifest entry replaces a default. |
 | `services.compose`   | Compose file pushed into the guest and run with `docker compose -f <path> up -d`.                                                      |
@@ -26,12 +26,13 @@ All keys are optional.
 | `aws_profiles`       | Extra host AWS profiles for the `aws-creds` provider, added to `aws.profiles` from `config.yaml`. Names match `[A-Za-z0-9._-]+`.       |
 | `harness_credentials` | Credential-carrying harness items (`omp-mcp`, `omp-env`, `omp-secrets`) or `{host, guest}` entries to push, added to `harness_settings.credentials`. |
 | `setup`              | Provision hook. Pushed to `/home/<guest_user>/.asbx/provision.sh` and run from `/workspace` as a login shell (`bash -l`) on every provision, so it must be idempotent. |
+| `guide`              | Markdown file appended to `/workspace/AGENTS.md` as "Project notes". See [below](#workspace-guide).                                     |
 
 Rules for specific keys:
 
-- **`services.compose` and `setup`:** paths relative to the manifest's
-  directory. The file must exist, and a path that escapes the directory
-  through `..` is rejected.
+- **`services.compose`, `setup` and `guide`:** paths relative to the
+  manifest's directory. The file must exist, and a path that escapes the
+  directory through `..` is rejected.
 - **`mounts`:** `host` and `guest` are required. `mode` accepts only `ro`.
   Mount sources must be world-readable
   ([security](security.md#host-files)).
@@ -68,7 +69,34 @@ repos:
 ```
 
 A repo is cloned only if its directory doesn't exist yet, and `setup` runs
-only on that first clone.
+only on that first clone. `dir` can't be `worktrees` or `AGENTS.md`, which
+asbx owns in `/workspace`.
+
+## Workspace guide
+
+Every provision writes `/workspace/AGENTS.md`, for agents started in
+`/workspace`. Harnesses started inside a repo stop looking for `AGENTS.md`
+at the repo root, so they don't load it. It holds:
+
+- a table of the repos: primary checkout, remotes, base branch and worktree
+  directory, plus each repo's `setup` when any repo has one;
+- the worktree convention: primary checkouts stay clean on their base
+  branch, and each task gets its own branch in
+  `/workspace/worktrees/<dir>/<slug>`, where the slug is the branch with `/`
+  replaced by `-`;
+- the manifest's `guide` file, under "Project notes". Put project-specific
+  guidance here, such as where PRs go or how to run the stack.
+
+The base branch is `<remote>/<ref>`. `<remote>` is `upstream` when the repo
+has that remote, else `origin`. Without a `ref`, the branch is the one the
+clone's `origin/HEAD` names; if `origin/HEAD` is unset, provision warns and
+the guide shows a placeholder. The guide tells agents to create worktrees
+with `--no-track`, so a branch started from `upstream/<ref>` pushes to
+`origin` (`push.autoSetupRemote` is on).
+
+The file's first line marks it as generated. Provision leaves an
+`AGENTS.md` without that line untouched and warns, so a hand-written one
+is never overwritten.
 
 ## Remotes
 
@@ -150,7 +178,8 @@ env:
   DATABASE_URL: "mysql://root@127.0.0.1:3306/app"
 auth: [github-gh]
 setup: demo-provision.sh
+guide: demo-guide.md
 ```
 
-`services/demo.compose.yaml` and `demo-provision.sh` sit next to `demo.yaml`
-in `projects/`.
+`services/demo.compose.yaml`, `demo-provision.sh` and `demo-guide.md` sit
+next to `demo.yaml` in `projects/`.
