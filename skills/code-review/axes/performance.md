@@ -31,6 +31,6 @@ Each finding states its label in the title. A finding with a read part and an in
 
 ## Report
 
-Each finding gives its location, label, cost model (operations × frequency × data size), the alternative, and a severity. Severity is frequency × per-call cost. Every added I/O round-trip or scan on a hot path is **high**, because each one repeats on every request or message. The same cost on a rare path is **low**. Order by severity. If you find nothing, report `No findings.` and stop. Under 300 words.
+Each finding gives its location, label, cost model (operations × frequency × data size), the alternative as the suggested fix, and a severity. Severity is frequency × per-call cost. Every added I/O round-trip or scan on a hot path is **high**, because each one repeats on every request or message. The same cost on a rare path is **low**. Order by severity. If you find nothing, report `No findings.` and stop. Under 400 words.
 
-**Not this axis**: wrong results or races (Correctness); micro-optimization of cold code (omit); code shape and naming (Standards).
+**Mainly owned by**: wrong results or races (Correctness); micro-optimization of cold code (omit); code shape and naming (Standards).

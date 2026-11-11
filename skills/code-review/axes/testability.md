@@ -30,4 +30,4 @@ Report the top 3 findings at most, ranked by how much test cost the refactor rem
 
 A finding with no payoff is dropped. If reach is clear throughout, report `Reach is clear.` and stop. Under 500 words.
 
-**Not this axis**: fixes that land in test code (Test Quality); general design smells with no test cost (Standards).
+**Mainly owned by**: fixes that land in test code (Test Quality); general design smells with no test cost (Standards).

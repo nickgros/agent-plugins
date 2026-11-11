@@ -14,6 +14,6 @@ Is the code right, independent of what any spec says?
 
 ## Report
 
-Each finding gives its location, the defect, a **repro** (the concrete input or state that triggers it), and the consequence. If you can't state a repro, label the finding "suspected". If you find nothing, report `No defects found.` and stop. Under 300 words.
+Each finding gives its location, the defect, a **repro** (the concrete input or state that triggers it), the consequence, and the suggested fix. If you can't state a repro, label the finding "suspected". If you find nothing, report `No defects found.` and stop. Under 400 words.
 
-**Not this axis**: divergence from the spec (Spec); defects an attacker can reach (Security); behavior with no test (Test Quality).
+**Mainly owned by**: divergence from the spec (Spec); defects an attacker can reach (Security); behavior with no test (Test Quality).

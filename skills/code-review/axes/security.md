@@ -12,6 +12,6 @@ Also check that new handlers and endpoints carry authn and authz, that no secret
 
 ## Report
 
-Each finding gives its location, the source → sink path, the missing control, and the fix. If a path isn't clearly reachable from a real source, label it "suspected". If you find nothing, report `No findings.` and stop. Under 300 words.
+Each finding gives its location, the source → sink path, the missing control, and the suggested fix. If a path isn't clearly reachable from a real source, label it "suspected". If you find nothing, report `No findings.` and stop. Under 400 words.
 
-**Not this axis**: bugs no attacker can trigger (Correctness).
+**Mainly owned by**: bugs no attacker can trigger (Correctness).

@@ -2,7 +2,7 @@
 
 Are the tests for this change thorough, correctly labeled, and of high quality?
 
-**Ownership: where the fix lands decides.** A finding whose fix belongs in test code is yours. A finding whose fix belongs in production code (for example, a test that has to substitute owned modules because the code hides its dependencies) is dropped here: Testability owns it.
+**Ownership: where the fix lands decides.** A finding whose fix belongs in test code is yours. A finding whose fix belongs in production code (for example, a test that has to substitute owned modules because the code hides its dependencies) is Testability's: flag it `(also: Testability)`.
 
 ## Report
 
@@ -14,6 +14,6 @@ Are the tests for this change thorough, correctly labeled, and of high quality?
   - _past the interface_: it asserts on internal state or call sequences instead of outcomes through the interface.
   - _obscure test_ (Meszaros): the name and setup don't show which rule the test checks or why the input is invalid. A common sign is a name that lists the inputs (`WithXAndY`) but not the invariant they break.
 
-Quote the test file and test name for each finding. Under 300 words.
+Quote the test file and test name for each finding, and give the suggested fix (the test to add or the change to make). Under 400 words.
 
-**Not this axis**: production code shaped so it can't be tested cheaply (Testability).
+**Mainly owned by**: production code shaped so it can't be tested cheaply (Testability).

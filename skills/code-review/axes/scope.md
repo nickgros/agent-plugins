@@ -25,4 +25,4 @@ Start from the commit list and `git diff --stat`: commits that already follow a 
 
 Either `Ship as one: <reason>`, or the stack bottom first. For each layer give its title, its files or commits, approximate changed lines, the seam it follows, and why it is green alone. Close with: split it using the `gh-stack` skill. Under 300 words.
 
-**Not this axis**: whether the code inside a layer is right (Correctness), well made (Standards), or asked for (Spec).
+**Mainly owned by**: whether the code inside a layer is right (Correctness), well made (Standards), or asked for (Spec).
