@@ -72,7 +72,7 @@ Spawn one sub-agent per selected axis, all in a single batch. Each prompt carrie
 
 ### 6. Aggregate
 
-Present the reports under `##` headings in this order, verbatim or lightly cleaned: **Spec**, **Architecture**, **Correctness**, **Security**, **Performance**, **Standards**, **Testability**, **Test Quality**, **Scope**. The order runs from _is it the right change_ through _is it right_ and _is it well made_ to _how to ship it_. Keep each finding under the axis that reported it and in that axis's order (see _Why multiple axes_).
+Present the reports under `##` headings in this order, verbatim or lightly cleaned: **Spec**, **Architecture**, **Correctness**, **Security**, **Performance**, **Standards**, **Testability**, **Test Quality**, **Scope**. The order runs from _is it the right change_ through _is it right_ and _is it well made_ to _how to ship it_. Keep each finding under the axis that reported it and in that axis's order (see _Why multiple axes_). Each finding should be assigned a priority (P1: must be fixed before merging, P2: should be fixed before merging, P3: nice to have).
 
 Resolve every `(also: <axis>)` flag before presenting:
 
