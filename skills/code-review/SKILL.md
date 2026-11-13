@@ -3,10 +3,10 @@ name: code-review
 description: 'Review a diff since a fixed point (commit, branch, tag, merge-base) across parallel axes: spec, architecture, correctness, security, performance, standards, testability, test quality, scope. Use when the user wants a branch, PR, or work-in-progress reviewed, or says "review since X".'
 ---
 
-Review the diff between `HEAD` and a fixed point the user supplies. Each axis runs as its own parallel sub-agent with its own brief under `axes/`, so no axis's findings colour another's. This skill selects the axes, dispatches them, and aggregates.
+Review the diff between `HEAD` and a fixed point the user supplies. Each axis runs as its own parallel sub-agent with its own brief under `axes/`, so no axis's findings colour another's. This skill selects the axes, dispatches them, aggregates, and writes the review to a Markdown file in a temporary directory.
 
-| Axis | Question | Runs when |
-| --- | --- | --- |
+| Axis | Question | Runs when | Suggested Agent Type |
+| --- | --- | --- | --- |
 | **Spec** | Does it do what the spec asked? | a spec is found (step 2) |
 | **Architecture** | Does it fit how the codebase is built, and would a cleaner design make it smaller or unnecessary? | the diff adds a production module or directory, a dependency, an exported type, interface, or abstraction (base class, registry, plugin point), or a cross-cutting mechanism (caching, retries, eventing, state store, config loading); **or** changes a schema, migration, serialized or persisted format, or an exported signature or default; **or** adds or removes env vars or feature flags; **or** touches ≥3 top-level source areas; **or** the user asks for it |
 | **Correctness** | Is it right, independent of the spec? | always |
@@ -72,9 +72,9 @@ Spawn one sub-agent per selected axis, all in a single batch. Each prompt carrie
 
 ### 6. Aggregate
 
-Present the reports under `##` headings in this order, verbatim or lightly cleaned: **Spec**, **Architecture**, **Correctness**, **Security**, **Performance**, **Standards**, **Testability**, **Test Quality**, **Scope**. The order runs from _is it the right change_ through _is it right_ and _is it well made_ to _how to ship it_. Keep each finding under the axis that reported it and in that axis's order (see _Why multiple axes_). Each finding should be assigned a priority (P1: must be fixed before merging, P2: should be fixed before merging, P3: nice to have).
+Assemble the report under `##` headings in this order, verbatim or lightly cleaned: **Spec**, **Architecture**, **Correctness**, **Security**, **Performance**, **Standards**, **Testability**, **Test Quality**, **Scope**. The order runs from _is it the right change_ through _is it right_ and _is it well made_ to _how to ship it_. Keep each finding under the axis that reported it and in that axis's order (see _Why multiple axes_). Each finding should be assigned a priority (P1: must be fixed before merging, P2: should be fixed before merging, P3: nice to have).
 
-Resolve every `(also: <axis>)` flag before presenting:
+Resolve every `(also: <axis>)` flag before writing:
 
 - The owning axis reported the same location: fold the flag into that finding as a cross-reference naming both axes.
 - The owning axis ran but missed it: message that axis's sub-agent with the flag and ask for either a full finding with a fix, placed under its axis, or `not a defect: <reason>`, after which the flag is dropped from the report.
@@ -83,6 +83,12 @@ Resolve every `(also: <axis>)` flag before presenting:
 Findings come from the axes alone; the orchestrator routes flags and writes none itself. Done when no flag remains unresolved.
 
 Then one line listing skipped axes with their reasons, and a one-line summary: total findings per axis, and the worst issue _within each axis_ (if any). Name no single winner across axes: that's the reranking the separation exists to prevent.
+
+### 7. Write the review file
+
+Write the aggregated report to the OS temp directory so nothing lands in the repo. Resolve the temp dir from `$TMPDIR`, falling back to `/tmp` (or `%TEMP%` on Windows), and write to `<tmpdir>/code-review-<timestamp>.md` so each run gets a fresh file. The file opens with a `#` title naming the fixed point and `HEAD` SHAs, then the diff command and commit list, then the axis sections, skipped-axes line, and summary from step 6.
+
+Done when the file exists. Reply in chat with its absolute path and the one-line summary only; the full report lives in the file.
 
 ## Why multiple axes
 
