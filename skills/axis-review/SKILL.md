@@ -1,5 +1,5 @@
 ---
-name: code-review
+name: axis-review
 description: 'Review a diff since a fixed point (commit, branch, tag, merge-base) across parallel axes: spec, architecture, correctness, security, performance, standards, testability, test quality, scope. Use when the user wants a branch, PR, or work-in-progress reviewed, or says "review since X".'
 ---
 
@@ -86,7 +86,7 @@ Then one line listing skipped axes with their reasons, and a one-line summary: t
 
 ### 7. Write the review file
 
-Write the aggregated report to the OS temp directory so nothing lands in the repo. Resolve the temp dir from `$TMPDIR`, falling back to `/tmp` (or `%TEMP%` on Windows), and write to `<tmpdir>/code-review-<timestamp>.md` so each run gets a fresh file. The file opens with a `#` title naming the fixed point and `HEAD` SHAs, then the diff command and commit list, then the axis sections, skipped-axes line, and summary from step 6.
+Write the aggregated report to the OS temp directory so nothing lands in the repo. Resolve the temp dir from `$TMPDIR`, falling back to `/tmp` (or `%TEMP%` on Windows), and write to `<tmpdir>/axis-review-<timestamp>.md` so each run gets a fresh file. The file opens with a `#` title naming the fixed point and `HEAD` SHAs, then the diff command and commit list, then the axis sections, skipped-axes line, and summary from step 6.
 
 Done when the file exists. Reply in chat with its absolute path and the one-line summary only; the full report lives in the file.
 

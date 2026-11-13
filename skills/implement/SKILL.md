@@ -12,6 +12,6 @@ Call the Skill tool with "tdd" where possible, at pre-agreed seams.
 
 Run typechecking regularly, single test files regularly, and the full test suite once at the end.
 
-Once done, call the Skill tool with "code-review" to review the work.
+Once done, call the Skill tool with "axis-review" to review the work.
 
 Unless otherwise instructed, do not commit the work. Once complete, provide a summary of changes and commit message for review.
