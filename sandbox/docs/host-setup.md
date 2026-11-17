@@ -41,9 +41,10 @@ Bakes the image every sandbox is created from:
    (`images:debian/13/cloud`). The VM's disk size is
    `defaults.resources.disk`.
 2. Cloud-init installs Docker, Node.js LTS, mise, the AWS CLI, and the
-   harness CLIs (`@anthropic-ai/claude-code`, `@openai/codex`,
-   `@google/gemini-cli`, opencode). It also runs the omp installer as the
-   guest user (`~/.local/bin/omp`, so `omp update` works in the guest).
+   harness CLIs (`@openai/codex`, `@google/gemini-cli`, opencode). It also runs
+   the omp and Claude Code installers as the guest user (`~/.local/bin/omp`,
+   `~/.local/bin/claude`, so `omp update` and `claude update` work in the
+   guest).
    `asbx up` (not the image) owns `/etc/environment`, which puts mise shims
    and `~/.local/bin` on PATH for non-login shells.
 3. Copies the host binaries listed in `defaults.copy_binaries` (empty by

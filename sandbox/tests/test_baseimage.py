@@ -54,6 +54,17 @@ def test_render_base_cloud_init_installs_omp_for_guest_user():
     assert "can1357/oh-my-pi/main/scripts/install.sh" in rendered
 
 
+def test_render_base_cloud_init_installs_claude_code_natively_for_guest_user():
+    import yaml
+    rendered = baseimage.render_base_cloud_init("dev", "https://example.invalid/node.tar.xz", "abc")
+    cmds = [c for c in yaml.safe_load(rendered)["runcmd"] if isinstance(c, str)]
+
+    assert any(c.startswith("runuser -u dev -- env HOME=/home/dev bash -c") and "claude.ai/install.sh" in c
+               for c in cmds)
+    assert not any("@anthropic-ai/claude-code" in c for c in cmds)
+    assert any(c.startswith("npm i -g") and "@openai/codex" in c and "@google/gemini-cli" in c for c in cmds)
+
+
 def test_copy_host_binaries_pushes_into_guest_local_bin_owned_by_guest(tmp_path):
     tool = tmp_path / "tool"
     tool.write_text("#!/bin/sh\n")

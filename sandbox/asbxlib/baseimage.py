@@ -124,12 +124,15 @@ runcmd:
   - unzip -q -d /tmp /tmp/awscliv2.zip
   - /tmp/aws/install
   # 5. Harness CLIs (as root, into /usr/local)
-  - npm i -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli
+  - npm i -g @openai/codex @google/gemini-cli
   # 6. opencode (must not run as root)
   - runuser -u {guest_user} -- bash -c 'curl -fsSL https://opencode.ai/install | bash'
   - ln -sf /home/{guest_user}/.opencode/bin/opencode /usr/local/bin/opencode
   # 6b. omp: installed as the guest user into ~/.local/bin, so `omp update` can replace it
   - runuser -u {guest_user} -- env HOME=/home/{guest_user} sh -c 'curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.sh | sh -s -- --binary'
+  # 6c. Claude Code: native installer as the guest user (~/.local/bin/claude), so
+  #     `claude update` and T3 Code's update button can replace it
+  - runuser -u {guest_user} -- env HOME=/home/{guest_user} bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
   # 7. fd-find is installed as fdfind on Debian
   - ln -sf /usr/bin/fdfind /usr/local/bin/fd
   # 8. workspace + skill symlinks
