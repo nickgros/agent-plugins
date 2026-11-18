@@ -1,0 +1,23 @@
+name: synapse
+resources:
+  cpu: 8
+  memory: 16GiB
+  disk: 60GiB
+remotes:
+  upstream: Sage-Bionetworks
+repos:
+  - url: https://github.com/nickgros/Synapse-Repository-Services.git
+    ref: develop
+  - url: https://github.com/nickgros/SynapseWebClient.git
+    ref: develop
+  - url: https://github.com/nickgros/Synapse-Stack-Builder.git
+    ref: develop
+  - url: https://github.com/nickgros/synapse-web-monorepo.git
+    ref: main
+tools:
+  java: corretto-21
+  maven: "3.9"
+  pnpm: 10
+  worktrunk: "0.81.0"
+setup: synapse-provision.sh
+harness_credentials: [omp-mcp, omp-env]
