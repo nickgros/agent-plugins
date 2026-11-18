@@ -12,7 +12,7 @@ This plan records which parts of [pstack](https://github.com/cursor/plugins/tree
 | OMP rules and agents | `omp/AGENTS.md`, `omp/agents/` | symlinked into `~/.omp/agent/` | `harness_settings.sync: [omp]` pushes them as real files on `up` and `settings-sync` |
 | Sandbox projects | `sandbox-projects/` | symlinked into `~/.config/agent-sandbox/projects/` | |
 
-- `config.yml` stays machine-local. OMP rewrites it (`/model`, setup), and provider access differs by machine. Agents name a role (`model: "@review_gpt"`), and each machine maps that role in `modelRoles`. If a role is not mapped, task dispatch falls back to the parent session's model.
+- `config.yml` stays machine-local. OMP rewrites it (`/model`, setup), and provider access differs by machine. Agents name a role (`model: "@peer_gpt"`), and each machine maps that role in `modelRoles`. If a role is not mapped, task dispatch falls back to the parent session's model.
 - `omp plugin link <repo>/omp` was rejected because plugins live in `~/.omp/plugins`, which the sandbox does not sync.
 
 ## Parts
@@ -30,12 +30,12 @@ Each part reaches a machine in one of four ways:
 | `unslop` | keep | Lock (already tracked). The next sync replaces the local copy with the condensed upstream version. | done |
 | attack-the-premise, encode-lessons-in-structure | adopt | One line each in `omp/AGENTS.md` | done |
 | `blast-radius`, `benchmark-checklist`, `why`, `sharpen`, `in-your-own-words`, `bro`, `correct`, `principle-fix-root-causes` | adopt | Lock. All are user-invoked (`/skill:<name>`), so they add nothing to the catalog. | done |
-| `architect` | adopt | Lock. Its one link to `arena` dangles until `arena` is adopted. | done |
-| `how` | adopt | Owned. Upstream spawns `subagent_type: generalPurpose, readonly: true`, a Cursor field that becomes "a read-only explorer subagent". | proposed |
-| `interrogate` + `arena` | adopt together | Owned, plus `omp/agents` panel agents. `interrogate` runs `arena`'s phases. `arena` hard-codes Cursor models (fable, gemini) and `pstack-models.mdc`. | proposed |
+| `architect` | adopt | Lock. Its link to `arena` resolves now that `arena` is adopted. | done |
+| `how` | adopt | Owned. Spawns the bundled read-only `scout` agent in place of Cursor's `generalPurpose, readonly: true`. | done |
+| `interrogate` + `arena` | adopt together | Owned. Runners are `task` (session model) and `peer-gpt`; the cross-judge is the read-only `judge-gpt`. Both agents are in `omp/agents/` and use the `peer_gpt` role. `arena` checks the role is mapped and falls back to a single-family panel, saying so. The Cursor model slugs and `pstack-models.mdc` are gone. | done |
 | `create-` and `maintain-formal-verification-skill`, `statechart` | adopt | Lock. `statechart` installs TLC and Java through `mise` on first run. The base image already has `mise`. `sandbox-projects/synapse-provision.sh` pre-installs both, reading the pins from the mounted `statechart/scripts/run.ts`. | done |
-| `reflect` | maybe | Owned. Upstream writes to `.cursor/skills/`. In this repo the destination is `skills/` here, followed by a sync. | open |
-| `create-` and `maintain-verification-skill` | maybe | Lock | open |
+| `reflect` | adopt | Owned. Edits a skill's source (this repo, or its upstream per `skills-lock.json`), never the installed copy that `install.sh` overwrites. | done |
+| `create-` and `maintain-verification-skill` | adopt | Owned. The generated skill goes to the project's `.agents/skills/verify-<app>/`, which omp and Codex read, in place of `.cursor/skills/`. | done |
 | `tdd` | keep yours | `tdd` comes from `mattpocock/skills` through the lock, so borrowed edits would be overwritten. To take pstack's "confirm the failure reason before fixing" step, move `tdd` to Owned. | open |
 | `teach`, `ketchup`, `recall`, `show-me-your-work`, `swarm`, `technical-writing` | skip | They overlap `handoff`, OMP's history, and OMP's `task` tool. `technical-writing` can be revisited later. | |
 | `poteto-mode`, `poteto-help`, `setup-pstack`, `poteto-agent`, other principles | skip | They are a Cursor operating mode, or they repeat the OMP prompt. | |
@@ -52,12 +52,14 @@ Each part reaches a machine in one of four ways:
 
 `gpt-6.2-{sol,astra}` appear in `aws bedrock list-inference-profiles`, but OMP 18.22.2 does not list them, even after `omp models refresh`. Every model on GitHub Copilot returned `model_not_supported`. Choosing a vendor is a policy question for the Bedrock account owner.
 
-Proposed roles, which are machine-local in `config.yml`:
+Each machine maps the role in its own `~/.omp/agent/config.yml`. Without it, `peer-gpt` and `judge-gpt` run on the session's model:
 
 ```yaml
 modelRoles:
-  review_gpt: amazon-bedrock/global.openai.gpt-6.1-sol
+  peer_gpt: amazon-bedrock/global.openai.gpt-6.1-sol:high
 ```
+
+Mapped on this host on 2026-11-18. A `peer-gpt` smoke task resolved to `amazon-bedrock/global.openai.gpt-6.1-sol` (from the child session's transcript).
 
 ## Drift on the current host
 
