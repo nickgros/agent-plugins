@@ -17,9 +17,11 @@ Review the changes, then commit and push the desired final state.
 ## Installing
 
 ```sh
-pnpx skills@latest add nickgros/agent-plugins
+./install.sh
 ```
+
+Run from the repo root. It installs the team skills listed in `skill-sources.txt`, then this directory, so a skill here overrides a team skill with the same name. It also symlinks `omp/AGENTS.md`, `omp/agents/`, and `sandbox-projects/` into place. Rerunning it is safe.
 
 ## Contributing
 
-Add a new external skill to this repo by adding it to the project with `pnpx skills@latest add`, then by running `pnpm skills:sync`.
+Add a new external skill to this repo by adding it to the project with `pnpx skills@latest add`, then by running `pnpm skills:sync`. For pstack, add from `https://github.com/cursor/plugins/tree/main/pstack` so the lock records `pstack/skills/...`, not the Claude Code copies.
