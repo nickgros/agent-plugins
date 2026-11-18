@@ -5,8 +5,8 @@ description: 'Review a diff since a fixed point (commit, branch, tag, merge-base
 
 Review the diff between `HEAD` and a fixed point the user supplies. Each axis runs as its own parallel sub-agent with its own brief under `axes/`, so no axis's findings colour another's. This skill selects the axes, dispatches them, aggregates, and writes the review to a Markdown file in a temporary directory.
 
-| Axis | Question | Runs when | Suggested Agent Type |
-| --- | --- | --- | --- |
+| Axis | Question | Runs when |
+| --- | --- | --- |
 | **Spec** | Does it do what the spec asked? | a spec is found (step 2) |
 | **Architecture** | Does it fit how the codebase is built, and would a cleaner design make it smaller or unnecessary? | the diff adds a production module or directory, a dependency, an exported type, interface, or abstraction (base class, registry, plugin point), or a cross-cutting mechanism (caching, retries, eventing, state store, config loading); **or** changes a schema, migration, serialized or persisted format, or an exported signature or default; **or** adds or removes env vars or feature flags; **or** touches ≥3 top-level source areas; **or** the user asks for it |
 | **Correctness** | Is it right, independent of the spec? | always |
@@ -33,7 +33,7 @@ Before going further, confirm the fixed point resolves (`git rev-parse <fixed-po
 
 Look for the originating spec, in this order:
 
-1. Issue references in the commit messages (`#123`, `Closes #45`, GitLab `!67`, etc.), fetched with the `/issue-tracker` skill when it is present.
+1. Issue references in the commit messages (`#123`, `Closes #45`, Jira keys like `ABC-123`, etc.), fetched with the `issue-tracker` skill when it is present.
 2. A path the user passed as an argument.
 3. A spec file under `docs/`, `specs/`, or `.scratch/` matching the branch name or feature.
 4. If nothing is found, ask the user where the spec is. If they say there isn't one, Spec is skipped with "no spec available".
@@ -52,7 +52,7 @@ Classify the diff with `git diff --numstat <fixed-point>...HEAD` plus the commit
 Spawn one sub-agent per selected axis, all in a single batch. Each prompt carries:
 
 - The diff command and commit list.
-- The absolute path of the axis brief, with the instruction to read it first and follow it: it holds the axis's criteria, finding format, and word budget.
+- The absolute path of the axis brief, with the instruction to read it first and follow it: it holds the axis's criteria and finding format.
 - For Spec and Test Quality: the path or fetched contents of the spec.
 - For Standards: the standards-source files from step 3. For Architecture: the architecture-source files from step 3.
 - Read-only: sub-agents read code and git history, and leave running tests and editing files to the user, since parallel agents sharing a tree collide.
@@ -67,12 +67,13 @@ Spawn one sub-agent per selected axis, all in a single batch. Each prompt carrie
   - 2–3 viable fixes: give at most 2, each with its tradeoff in one line.
   - "Suspected" findings: give the check that would confirm the defect instead.
   - No sensible fix: `no fix suggested: <reason>`.
-  - Snippets fall outside the word budget.
+- **Priority**: every finding carries one: P1 must be fixed before merging, P2 should be fixed before merging, P3 nice to have.
+- **Length**: report every finding worth acting on and nothing else: no narration of the search, no restating the diff.
 - **Cross-axis flags**: something serious that another axis mainly owns gets reported anyway, as a location and one line tagged `(also: <axis>)`, with no fix. A duplicate costs one line; a miss costs a bug.
 
 ### 6. Aggregate
 
-Assemble the report under `##` headings in this order, verbatim or lightly cleaned: **Spec**, **Architecture**, **Correctness**, **Security**, **Performance**, **Standards**, **Testability**, **Test Quality**, **Scope**. The order runs from _is it the right change_ through _is it right_ and _is it well made_ to _how to ship it_. Keep each finding under the axis that reported it and in that axis's order (see _Why multiple axes_). Each finding should be assigned a priority (P1: must be fixed before merging, P2: should be fixed before merging, P3: nice to have).
+Assemble the report under `##` headings in this order, verbatim or lightly cleaned: **Spec**, **Architecture**, **Correctness**, **Security**, **Performance**, **Standards**, **Testability**, **Test Quality**, **Scope**. The order runs from _is it the right change_ through _is it right_ and _is it well made_ to _how to ship it_. Keep each finding under the axis that reported it and in that axis's order (see _Why multiple axes_), with the priority its axis gave it.
 
 Resolve every `(also: <axis>)` flag before writing:
 

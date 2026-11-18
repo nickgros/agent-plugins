@@ -14,6 +14,6 @@ Are the tests for this change thorough, correctly labeled, and of high quality?
   - _past the interface_: it asserts on internal state or call sequences instead of outcomes through the interface.
   - _obscure test_ (Meszaros): the name and setup don't show which rule the test checks or why the input is invalid. A common sign is a name that lists the inputs (`WithXAndY`) but not the invariant they break.
 
-Quote the test file and test name for each finding, and give the suggested fix (the test to add or the change to make). Under 400 words.
+Quote the test file and test name for each finding, and give the suggested fix (the test to add or the change to make).
 
 **Mainly owned by**: production code shaped so it can't be tested cheaply (Testability).

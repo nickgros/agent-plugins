@@ -1,3 +1,3 @@
 interface:
-  display_name: "Code Review"
+  display_name: "Axis Review"
   short_description: "Review a diff across parallel axes"

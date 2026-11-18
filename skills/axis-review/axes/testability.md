@@ -21,13 +21,13 @@ Read the evidence from the diff's tests where they exist: test setup is where bl
 
 ## Report
 
-Report the top 3 findings at most, ranked by how much test cost the refactor removes. Each finding has four parts:
+Report the findings worth acting on, ranked by how much test cost the refactor removes. Each finding has four parts:
 
 1. **Evidence**: the quoted hunk or test setup.
 2. **Diagnosis**: one row from the table.
 3. **Prescription**: a before → after sketch of the interface.
 4. **Payoff**: the unit test that becomes cheap, as a one-liner.
 
-A finding with no payoff is dropped. If reach is clear throughout, report `Reach is clear.` and stop. Under 500 words.
+A finding with no payoff is dropped. If reach is clear throughout, report `Reach is clear.` and stop.
 
 **Mainly owned by**: fixes that land in test code (Test Quality); general design smells with no test cost (Standards).

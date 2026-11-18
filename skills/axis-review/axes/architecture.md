@@ -2,7 +2,7 @@
 
 Step back from the hunks. Does this change fit how the codebase is built, and would a cleaner design make it smaller or unnecessary?
 
-For vocabulary (**module**, **interface**, **seam**, **depth**, **leakage**), read the `codebase-design` skill: `../../codebase-design/SKILL.md` relative to this file. When the orchestrator passed you a `GLOSSARY.md` or `CONTEXT.md`, also read `../../domain-modeling/SKILL.md` for check 1's vocabulary part.
+For vocabulary (**module**, **interface**, **seam**, **depth**, **leverage**, **locality**), read the `codebase-design` skill: `../../codebase-design/SKILL.md` relative to this file. When the orchestrator passed you a `GLOSSARY.md` or `CONTEXT.md`, also read `../../domain-modeling/SKILL.md` for check 1's vocabulary part.
 
 Your sources are the diff, the surrounding code, and the architecture docs the orchestrator passed you (ADRs, `ARCHITECTURE.md`, `CONTEXT.md`/`GLOSSARY.md`, `AGENTS.md`/`CLAUDE.md`). Each check needs legwork beyond the diff: find the **precedent** before judging.
 
@@ -23,13 +23,13 @@ Done when every check has a verdict, each backed by the precedent or doc you rea
 
 ## Report
 
-Top 3 findings at most, ranked by how much design cost the alternative removes or how hard the change is to undo. Each finding gives:
+Report the findings worth acting on, ranked by how much design cost the alternative removes or how hard the change is to undo. Each finding gives:
 
 1. **Check**: its number and name.
 2. **Evidence**: the anchored hunk, and the precedent or doc it diverges from.
 3. **Alternative**: the design you would choose, as the suggested fix.
 4. **Verdict**: `change in this PR`, `follow-up`, or `note only`; one-way or two-way door; approximate size (files, lines) and what it deletes.
 
-If the change fits throughout, report `Fits the architecture.` and stop. Under 500 words.
+If the change fits throughout, report `Fits the architecture.` and stop.
 
 **Mainly owned by**: smells visible inside one hunk or file (Standards); call sites broken today (Correctness); PR packaging (Scope).

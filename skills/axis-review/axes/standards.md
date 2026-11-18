@@ -43,6 +43,6 @@ Trust-boundary validation, data-loss handling, security controls, and accessibil
 
 ## Report
 
-Per file or hunk where relevant: (a) each documented-standard breach, citing the file and rule; (b) each baseline smell, named and with the hunk quoted. For simplicity smells, add the approximate lines the fix removes. If you find nothing, report `No findings.` and stop. Under 400 words.
+Per file or hunk where relevant: (a) each documented-standard breach, citing the file and rule; (b) each baseline smell, named and with the hunk quoted. For simplicity smells, add the approximate lines the fix removes. If you find nothing, report `No findings.` and stop.
 
 **Mainly owned by**: unrequested behavior (Spec); code shaped so it can't be unit-tested cheaply (Testability); dependency risk (Security); a second convention or a mechanism rebuilt across modules (Architecture).
