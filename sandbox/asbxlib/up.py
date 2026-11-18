@@ -104,6 +104,8 @@ def cmd_up(incus: Incus, cfg: dict, group: str, no_auth: bool, no_provision: boo
     except AsbxError as e:
         ui.warn(f"{instance}: shell not configured: {e}")
 
+    guest.start_paseo(incus, instance)
+
     if not no_auth:
         auth.run_auth(incus, manifest_obj, cfg)
     if not no_provision:

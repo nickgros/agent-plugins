@@ -24,7 +24,7 @@ def up_env(monkeypatch, cfg):
     monkeypatch.setattr(up.ingress, "require_firewall", lambda cfg: None)
     monkeypatch.setattr(up.netacl, "pin_nic", lambda incus, instance, cfg, address=None: "10.210.86.192")
     for name in ("wait_for_agent", "wait_for_cloud_init", "sync_authorized_keys",
-                 "write_guest_env", "write_git_identity", "configure_shell"):
+                 "write_guest_env", "write_git_identity", "configure_shell", "start_paseo"):
         monkeypatch.setattr(up.guest, name, lambda *a, **k: None)
     monkeypatch.setattr(up.guest, "sync_mounts", lambda *a, **k: False)
     monkeypatch.setattr(up.sshconf, "write_ssh_config", lambda *a, **k: "")

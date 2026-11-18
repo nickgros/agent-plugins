@@ -60,8 +60,37 @@ def resolve_node_download(fetch_json=None, fetch_text=None) -> tuple[str, str]:
 # Base image cloud-init render
 # ---------------------------------------------------------------------------
 
+def render_paseo_unit(guest_user: str) -> str:
+    """Paseo daemon as the guest user. A login shell gives it the same env,
+    PATH and mise setup an SSH session gets. The condition holds it back on a
+    new instance's first boot until `up` has written the guest env and starts
+    it (guest.start_paseo); later boots start it here."""
+    return f"""[Unit]
+Description=Paseo daemon (asbx)
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists={guest.ENV_FILE_PATH}
+
+[Service]
+User={guest_user}
+WorkingDirectory=/home/{guest_user}
+ExecStart=/bin/bash -lc 'exec paseo daemon run'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
 def render_base_cloud_init(guest_user: str, node_url: str, node_sha256: str) -> str:
+    unit = "".join(f"      {line}\n" if line else "\n" for line in render_paseo_unit(guest_user).splitlines())
     return f"""#cloud-config
+write_files:
+  - path: /etc/systemd/system/{guest.PASEO_UNIT}
+    permissions: "0644"
+    content: |
+{unit}
 users:
   - default
   - name: {guest_user}
@@ -124,7 +153,7 @@ runcmd:
   - unzip -q -d /tmp /tmp/awscliv2.zip
   - /tmp/aws/install
   # 5. Harness CLIs (as root, into /usr/local)
-  - npm i -g @openai/codex @google/gemini-cli
+  - npm i -g @openai/codex @google/gemini-cli @getpaseo/cli
   # 6. opencode (must not run as root)
   - runuser -u {guest_user} -- bash -c 'curl -fsSL https://opencode.ai/install | bash'
   - ln -sf /home/{guest_user}/.opencode/bin/opencode /usr/local/bin/opencode
@@ -133,6 +162,8 @@ runcmd:
   # 6c. Claude Code: native installer as the guest user (~/.local/bin/claude), so
   #     `claude update` and T3 Code's update button can replace it
   - runuser -u {guest_user} -- env HOME=/home/{guest_user} bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+  # 6d. Paseo: no server-side speech models; clients do dictation locally
+  - runuser -u {guest_user} -- env HOME=/home/{guest_user} paseo daemon config set features.dictation.enabled false
   # 7. fd-find is installed as fdfind on Debian
   - ln -sf /usr/bin/fdfind /usr/local/bin/fd
   # 8. workspace + skill symlinks
@@ -141,7 +172,7 @@ runcmd:
   - ln -sf /home/{guest_user}/.agents/skills /home/{guest_user}/.codex/skills
   - chown -R {guest_user}:{guest_user} /workspace /home/{guest_user}
   # 9. ssh
-  - systemctl enable ssh
+  - systemctl enable ssh {guest.PASEO_UNIT}
   - sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
 """
 

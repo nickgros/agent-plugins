@@ -199,6 +199,8 @@ def sync_authorized_keys(incus: Incus, instance: str, cfg: dict) -> None:
 
 
 WORKSPACE_CD_PATH = "/etc/profile.d/asbx-cwd.sh"
+ENV_FILE_PATH = "/etc/profile.d/asbx-env.sh"
+PASEO_UNIT = "asbx-paseo.service"
 
 
 def render_workspace_cd(workspace: str = "/workspace") -> str:
@@ -214,7 +216,7 @@ def render_workspace_cd(workspace: str = "/workspace") -> str:
 def write_guest_env(incus: Incus, instance: str, cfg: dict, manifest_env: dict) -> None:
     guest_user = cfg["guest_user"]
     env = {**cfg["harness_env"], **cfg["defaults"]["env"], **manifest_env}
-    incus.push_text(instance, "/etc/profile.d/asbx-env.sh", render_env_file(env),
+    incus.push_text(instance, ENV_FILE_PATH, render_env_file(env),
                     mode="0644", uid=0, gid=0)
     incus.push_text(instance, WORKSPACE_CD_PATH, render_workspace_cd(),
                     mode="0644", uid=0, gid=0)
@@ -228,13 +230,25 @@ def write_guest_env(incus: Incus, instance: str, cfg: dict, manifest_env: dict) 
                     mode="0644", uid=guest_uid, gid=guest_uid)
 
 
+def start_paseo(incus: Incus, instance: str) -> None:
+    """Starts the base image's Paseo daemon unit once the guest env exists.
+    `start` leaves a running daemon, and its agents, alone; env changes reach
+    it on the next boot or `systemctl restart`."""
+    proc = incus.exec_in(instance, ["systemctl", "start", PASEO_UNIT], user="root", check=False)
+    if proc.returncode != 0:
+        ui.warn(f"{instance}: paseo daemon not started; images built before {PASEO_UNIT} lack it "
+                f"(asbx build-base, then asbx rebuild):\n{(proc.stderr or '').strip()}")
+        return
+    ui.ok(f"{instance}: paseo daemon running")
+
+
 ZPROFILE_PATH = "/etc/zsh/zprofile"
 
 
 def render_zprofile() -> str:
     """Debian's zsh never sources /etc/profile.d; mirror what bash login shells get there."""
     return ("# managed by asbx: rewritten on every 'asbx up'\n"
-            "[[ -r /etc/profile.d/asbx-env.sh ]] && emulate sh -c '. /etc/profile.d/asbx-env.sh'\n"
+            f"[[ -r {ENV_FILE_PATH} ]] && emulate sh -c '. {ENV_FILE_PATH}'\n"
             f"[[ -r {WORKSPACE_CD_PATH} ]] && emulate sh -c '. {WORKSPACE_CD_PATH}'\n"
             '[[ -x /usr/local/bin/mise ]] && eval "$(/usr/local/bin/mise activate zsh)"\n')
 

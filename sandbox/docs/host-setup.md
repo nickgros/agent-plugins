@@ -44,7 +44,12 @@ Bakes the image every sandbox is created from:
    harness CLIs (`@openai/codex`, `@google/gemini-cli`, opencode). It also runs
    the omp and Claude Code installers as the guest user (`~/.local/bin/omp`,
    `~/.local/bin/claude`, so `omp update` and `claude update` work in the
-   guest).
+   guest), and installs `@getpaseo/cli` with an enabled `asbx-paseo.service`
+   that runs `paseo daemon run` as the guest user in a login shell. The unit
+   waits for `/etc/profile.d/asbx-env.sh`, so a new sandbox's daemon first
+   starts from `asbx up`, with the harness env in place. Dictation is turned
+   off in the guest's `~/.paseo/config.json`, so the daemon downloads no
+   speech models; clients do dictation locally.
    `asbx up` (not the image) owns `/etc/environment`, which puts mise shims
    and `~/.local/bin` on PATH for non-login shells.
 3. Copies the host binaries listed in `defaults.copy_binaries` (empty by

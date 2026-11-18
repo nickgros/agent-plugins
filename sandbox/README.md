@@ -3,8 +3,8 @@
 `asbx` creates isolated Incus **VMs** you can hand to an LLM agent. Each
 project group gets one long-lived VM. Inside it are the group's git repos,
 Docker Compose services, a provision hook, and the harness CLIs (`claude`,
-`codex`, `gemini`, `opencode`, `omp`). You reach it over SSH, including from
-VSCode and JetBrains.
+`codex`, `gemini`, `opencode`, `omp`), with a Paseo daemon (`paseo`) running
+at boot. You reach it over SSH, including from VSCode and JetBrains.
 
 ## Security model
 

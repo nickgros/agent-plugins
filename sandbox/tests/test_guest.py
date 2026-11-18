@@ -295,6 +295,15 @@ def test_write_mise_config_creates_system_dir_and_pushes_root_owned_file():
     assert push[4:] == ["--mode", "0644", "--uid", "0", "--gid", "0"]
 
 
+def test_start_paseo_warns_instead_of_failing_on_an_image_without_the_unit(capsys):
+    fake = FakeIncus()
+    fake.stub("systemctl", "start", "asbx-paseo.service", rc=5, stderr="Unit asbx-paseo.service not found.")
+
+    guest.start_paseo(fake, "sandbox-demo")
+
+    assert "Unit asbx-paseo.service not found." in capsys.readouterr().err
+
+
 def test_render_etc_environment_puts_shims_before_local_bin_before_system_dirs():
     body = guest.render_etc_environment("agent")
     path = next(l for l in body.splitlines() if l.startswith("PATH=")).split('"')[1].split(":")

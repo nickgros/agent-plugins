@@ -37,8 +37,12 @@ Steps, in order:
    sandbox restarts. A mount Incus refuses is an error.
 5. Rewrites `authorized_keys` (the asbx key plus `ssh.extra_pubkeys`).
 6. Writes the SSH config, the env files and the git identity.
-7. Runs auth, unless `--no-auth`.
-8. Runs provision, unless `--no-provision`.
+7. Starts `asbx-paseo.service` (the Paseo daemon). A running daemon is left
+   alone, so env changes reach it only after a reboot or
+   `sudo systemctl restart asbx-paseo` in the guest. An image built before
+   the unit existed gets a warning, not a failure.
+8. Runs auth, unless `--no-auth`.
+9. Runs provision, unless `--no-provision`.
 
 ### `auth <group>` / `provision <group>`
 

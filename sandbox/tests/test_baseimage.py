@@ -65,6 +65,22 @@ def test_render_base_cloud_init_installs_claude_code_natively_for_guest_user():
     assert any(c.startswith("npm i -g") and "@openai/codex" in c and "@google/gemini-cli" in c for c in cmds)
 
 
+def test_render_base_cloud_init_installs_and_enables_the_paseo_unit_verbatim():
+    import yaml
+    rendered = baseimage.render_base_cloud_init("dev", "https://example.invalid/node.tar.xz", "abc")
+    doc = yaml.safe_load(rendered)
+
+    [unit] = [f for f in doc["write_files"] if f["path"] == "/etc/systemd/system/asbx-paseo.service"]
+    assert unit["content"] == baseimage.render_paseo_unit("dev")
+    assert "User=dev\n" in unit["content"]
+    assert "ConditionPathExists=/etc/profile.d/asbx-env.sh\n" in unit["content"]
+    assert any("@getpaseo/cli" in c for c in doc["runcmd"] if isinstance(c, str))
+    assert ("runuser -u dev -- env HOME=/home/dev paseo daemon config set features.dictation.enabled false"
+            in doc["runcmd"])
+    assert "systemctl enable ssh asbx-paseo.service" in doc["runcmd"]
+    assert doc["users"][1]["name"] == "dev"
+
+
 def test_copy_host_binaries_pushes_into_guest_local_bin_owned_by_guest(tmp_path):
     tool = tmp_path / "tool"
     tool.write_text("#!/bin/sh\n")
