@@ -19,17 +19,20 @@ link() {
   echo "linked: $dest -> $src"
 }
 
-# Skills go to ~/.agents/skills (the skills CLI's universal directory, read by
-# omp, Codex and the sandbox mount). Sources install in order, this repo last.
-while IFS= read -r source; do
-  case $source in ''|'#'*) continue ;; esac
-  pnpx skills@latest add "$source" -g -s '*' -a codex -y
-done < "$repo/skill-sources.txt"
-pnpx skills@latest add "$repo" -g -s '*' -a codex -y
-
 link "$repo/omp/AGENTS.md" "$HOME/.omp/agent/AGENTS.md"
 link "$repo/omp/agents" "$HOME/.omp/agent/agents"
 
 for f in "$repo"/sandbox-projects/*.yaml "$repo"/sandbox-projects/*.sh; do
   link "$f" "$HOME/.config/agent-sandbox/projects/$(basename "$f")"
 done
+
+command -v pnpx >/dev/null || { echo "install.sh: pnpm (pnpx) is required to install skills" >&2; exit 1; }
+
+# Skills go to ~/.agents/skills (the skills CLI's universal directory, read by
+# omp, Codex and the sandbox mount). Sources install in order, this repo last.
+# Private sources need git access to GitHub (gh auth login).
+while IFS= read -r source <&3; do
+  case $source in ''|'#'*) continue ;; esac
+  pnpx skills@latest add "$source" -g -s '*' -a codex -y
+done 3< "$repo/skill-sources.txt"
+pnpx skills@latest add "$repo" -g -s '*' -a codex -y

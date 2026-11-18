@@ -76,9 +76,14 @@ sudo sysctl --system >/dev/null
 # The statechart skill (used by the formal verification skills) installs TLC and
 # Java through mise on first run. Install them now, from the pins in the mounted
 # skill, so the first model check needs no network and the pins never drift.
+# Best effort: statechart still installs them itself if this fails.
 STATECHART_RUN="$HOME/.agents/skills/statechart/scripts/run.ts"
 if [ -f "$STATECHART_RUN" ]; then
-  TLC_TOOL=$(grep -oP '^\s*"\Khttp:tla2tools\[[^"]+' "$STATECHART_RUN")
-  JAVA_TOOL=$(grep -oP '^const JAVA_TOOL = "\K[^"]+' "$STATECHART_RUN")
-  (cd /tmp && mise install --yes "$JAVA_TOOL" "$TLC_TOOL")
+  TLC_TOOL=$(grep -oP '^\s*"\Khttp:tla2tools\[[^"]+' "$STATECHART_RUN" || true)
+  JAVA_TOOL=$(grep -oP '^const JAVA_TOOL = "\K[^"]+' "$STATECHART_RUN" || true)
+  if [ -n "$TLC_TOOL" ] && [ -n "$JAVA_TOOL" ]; then
+    (cd /tmp && mise install --yes "$JAVA_TOOL" "$TLC_TOOL") || echo "warn: statechart tool pre-install failed" >&2
+  else
+    echo "warn: statechart tool pins not found in $STATECHART_RUN; update this hook" >&2
+  fi
 fi
