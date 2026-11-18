@@ -1,0 +1,2 @@
+- Two fixes that share one premise failed the same check: write the premise down and test it directly before a third fix.
+- A correction you would give twice becomes a lint, type, test, or script, not another instruction.

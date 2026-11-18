@@ -1,0 +1,4 @@
+# Skill sources installed by install.sh, in order. A later source replaces a
+# same-named skill from an earlier one. This repo's own skills/ install last,
+# so they override every source listed here.
+Sage-Bionetworks/web-dev-agent-plugins
