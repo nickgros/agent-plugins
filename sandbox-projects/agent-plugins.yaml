@@ -1,0 +1,15 @@
+name: agent-plugins
+# The repo that sets up agent environments. Working on it means running
+# install.sh, skill syncs and test installs that write to ~/.agents, ~/.omp and
+# ~/.config, so it runs here instead of on the host. The guest also doubles as
+# a fresh machine: every provision runs install.sh from a clean checkout.
+repos:
+  - url: https://github.com/nickgros/agent-plugins.git
+    ref: main
+tools:
+  pnpm: "11"
+# Drop the read-only host skills mount so install.sh writes the guest's own
+# ~/.agents/skills, exactly as on a fresh machine.
+mounts:
+  - { guest: /home/agent/.agents/skills, mode: none }
+setup: agent-plugins-provision.sh
