@@ -39,7 +39,7 @@ class Mount:
 
     @staticmethod
     def from_dict(d: dict) -> "Mount":
-        return Mount(host=d["host"], guest=d["guest"], mode=d.get("mode", "ro"))
+        return Mount(host=d.get("host", ""), guest=d["guest"], mode=d.get("mode", "ro"))
 
 
 @dataclass(frozen=True)
@@ -126,15 +126,15 @@ def validate_manifest_dict(data: dict, manifest_path: str) -> dict:
         for k in mount:
             if k not in MOUNT_KEYS:
                 raise AsbxError(f"manifest {manifest_path}: unknown key 'mounts.{k}'")
-        for required in ("host", "guest"):
+        mode = mount.get("mode", "ro")
+        if mode not in ("ro", "none"):
+            raise AsbxError(
+                f"mount {mount.get('guest')}: only mode 'ro' is supported, or 'none' to drop "
+                f"a default mount (writable mounts are not implemented)"
+            )
+        for required in ("guest",) if mode == "none" else ("host", "guest"):
             if not mount.get(required):
                 raise AsbxError(f"manifest {manifest_path}: mounts[*].{required} is required")
-        mode = mount.get("mode", "ro")
-        if mode != "ro":
-            raise AsbxError(
-                f"mount {mount.get('guest')}: only mode 'ro' is supported "
-                f"(writable mounts are not implemented)"
-            )
 
     services = data.get("services")
     if services is not None:
@@ -218,11 +218,16 @@ def merge_remotes(base_remotes: dict, override_remotes: dict) -> dict:
 
 
 def merge_mounts(default_mounts: list[Mount], manifest_mounts: list[Mount]) -> list[Mount]:
+    """A manifest entry replaces the default at its guest path; `mode: none`
+    removes it."""
     by_guest: dict[str, Mount] = {}
     for m in default_mounts:
         by_guest[m.guest] = m
     for m in manifest_mounts:
-        by_guest[m.guest] = m
+        if m.mode == "none":
+            by_guest.pop(m.guest, None)
+        else:
+            by_guest[m.guest] = m
     return list(by_guest.values())
 
 

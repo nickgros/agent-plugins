@@ -146,6 +146,21 @@ def test_merge_mounts_manifest_replaces_by_guest_path_others_survive():
     assert len(result) == 2
 
 
+def test_merge_mounts_mode_none_drops_the_default_at_that_guest_path():
+    defaults = [
+        manifest.Mount(host="~/.agents/skills", guest="/home/agent/.agents/skills", mode="ro"),
+        manifest.Mount(host="~/other", guest="/home/agent/other", mode="ro"),
+    ]
+    manifest_mounts = [manifest.Mount.from_dict({"guest": "/home/agent/.agents/skills", "mode": "none"})]
+    result = manifest.merge_mounts(defaults, manifest_mounts)
+    assert [m.guest for m in result] == ["/home/agent/other"]
+
+
+def test_manifest_mode_none_mount_needs_no_host():
+    manifest.validate_manifest_dict(
+        {"mounts": [{"guest": "/home/agent/.agents/skills", "mode": "none"}]}, "/tmp/demo.yaml")
+
+
 # ---------------------------------------------------------------------------
 # resolve_remote_url / merge_remotes / repo_dir
 # ---------------------------------------------------------------------------

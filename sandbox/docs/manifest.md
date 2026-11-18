@@ -18,7 +18,7 @@ All keys are optional.
 | `resources`          | `cpu` (int), `memory` and `disk` (`^\d+(MiB\|GiB)$`). Merged over `defaults.resources`.                                                |
 | `repos`              | Repos cloned into `/workspace/<dir>`, with worktrees under `/workspace/worktrees/<dir>/`. See [below](#repos).                         |
 | `remotes`            | Remotes for every repo, merged over `defaults.remotes`. See [below](#remotes).                                                         |
-| `mounts`             | Read-only host mounts: `{host, guest, mode: ro}`. Merged with `defaults.mounts` by `guest` path; a manifest entry replaces a default. |
+| `mounts`             | Read-only host mounts: `{host, guest, mode: ro}`. Merged with `defaults.mounts` by `guest` path; a manifest entry replaces a default, and `{guest, mode: none}` removes it. |
 | `services.compose`   | Compose file pushed into the guest and run with `docker compose -f <path> up -d`.                                                      |
 | `env`                | Environment for repo setup, compose and the setup hook. Also written to `/etc/profile.d/asbx-env.sh`.                                  |
 | `tools`              | mise `tool: version` map (e.g. `java: corretto-21`, `maven: "3.9"`), merged over `defaults.tools` per tool. Written to the guest's `/etc/mise/config.toml`. |
@@ -33,7 +33,7 @@ Rules for specific keys:
 - **`services.compose`, `setup` and `guide`:** paths relative to the
   manifest's directory. The file must exist, and a path that escapes the
   directory through `..` is rejected.
-- **`mounts`:** `host` and `guest` are required. `mode` accepts only `ro`.
+- **`mounts`:** `host` and `guest` are required. `mode` accepts `ro`, or `none` (with no `host`) to drop the default mount at that `guest` path.
   Mount sources must be world-readable
   ([security](security.md#host-files)).
 
