@@ -6,6 +6,11 @@ filtered NIC. Nothing inside the guest is a security control. Why VMs:
 
 ## Network egress
 
+`network.block_cidrs` is the shared drop list. Incus enforces it with a
+NIC ACL, Tart with Softnet ([below](#tart-softnet)).
+
+### Incus
+
 An Incus network ACL (`network.acl`, `asbx-egress` by default) is attached to
 each sandbox's NIC. It drops outbound traffic to every range in
 `network.block_cidrs`:
@@ -36,6 +41,41 @@ The ACL's rules are computed from the current bridge address and
 `block_cidrs`. `asbx doctor` reports drift; `asbx doctor --fix` rewrites the
 ACL.
 
+### Tart (Softnet)
+
+Each sandbox's launchd job runs `tart run` with the rules on its command
+line, so the VM can't boot without them. Rendered from
+`network.block_cidrs` (default list shown):
+
+```
+--net-softnet-block=out @host,out 10.0.0.0/8,out 172.16.0.0/12,out 192.168.0.0/16,out 169.254.0.0/16,out 100.64.0.0/10
+--net-softnet-allow=out proto udp @host port 53,in @host
+```
+
+- `out @host` blocks new connections from the guest to the Mac. The one
+  exception is DNS (UDP 53): the guest's resolver is the gateway, the Mac.
+- Every IPv4 entry of `block_cidrs` becomes an `out <cidr>` block. IPv6
+  entries are left out because Softnet drops all IPv6 anyway; there is no
+  IPv6 gap on Tart.
+- `in @host` admits connections the Mac opens, such as SSH.
+- Each `tart run` starts its own Softnet with its own private subnet. A
+  guest reaches nothing private outside it: Softnet itself lets a VM reach
+  only globally routable IPv4 and its gateway, and the blocks above cover
+  the private ranges. That includes other sandboxes.
+
+Softnet needs root, so it runs setuid root from `tart.softnet_dir`. asbx
+puts that directory first on the job's PATH and refuses to boot a VM unless
+the directory and binary are root-owned, not group- or world-writable, and
+the binary is setuid. A user-writable copy behind a sudo rule would let any
+process running as the user gain root
+([ADR 0006](adr/0006-one-backend-per-host-os.md)). `up` also refuses a
+sandbox VM that is running outside asbx's launchd job, since it may have
+been started without the rules. A changed rule set reaches a running VM
+only when it restarts; `up` restarts it.
+
+The VM runs with `--no-clipboard` and `--no-audio`: no access to the Mac's
+pasteboard or microphone.
+
 ## Host files
 
 The guest can read only the host paths listed under `mounts:`. These are
@@ -46,15 +86,23 @@ guest to host filesystem. Repos are cloned inside the VM rather than mounted
 A mount source must be world-readable and world-traversable
 (`chmod o+rX`). `up` and `doctor` refuse one that isn't. The guest's uid
 belongs to the VM's own namespace and has nothing to do with host uids, so
-owner and group bits on the host give the guest nothing. Ancestor
-directories are not checked, because the Incus daemon serves virtiofs as host
-root.
+owner and group bits on the host give the guest nothing. Incus: ancestor
+directories are not checked, because the Incus daemon serves virtiofs as
+host root. Tart: shares are passed to `tart run` as `ro` directories and
+appear root-owned in the guest, with the host's mode bits.
 
 ## Inside the guest
 
 `guest_user` (`agent` by default) has `sudo: ALL=(ALL) NOPASSWD:ALL`. This is
 deliberate. To keep the agent away from something, don't mount it and don't
 give the guest network access to it.
+
+Tart: the stock image's guest agent runs as `admin` with passwordless sudo.
+`build-base` makes the agent run as root and deletes `admin`; the base
+recipe turns off SSH password logins, as on Linux
+([host setup](host-setup.md#build-base-on-tart)). So
+`tart exec`, which asbx uses for everything inside the guest, is root
+in a sandbox; anyone on the Mac who can run `tart` as you can do the same.
 
 The agent can use any credential placed in the guest:
 
@@ -66,7 +114,7 @@ The agent can use any credential placed in the guest:
   `~/.asbx/aws/<profile>.json` read through `credential_process`. The guest
   holds no SSO token, no refresh token and no other profile, and it has no
   channel back to the host. A leaked credential works until it expires
-  (about an hour); the host timer replaces it every 10 minutes.
+  (about an hour); the host refresh job replaces it every 10 minutes.
 - Harness settings sync (`harness_settings`, `asbx settings-sync`) is host to
   guest only. The host is authoritative, so guest edits to synced files are
   overwritten. Files that carry credentials are left out unless listed under
@@ -81,6 +129,11 @@ The agent can use any credential placed in the guest:
   through `/etc/profile.d/asbx-env.sh`.
 
 ## Network ingress
+
+Incus only; Tart has no ingress firewall, managed WireGuard or pinned
+addresses, and asbx adds no inbound control there beyond Softnet. The
+supported path from other machines is through the Mac
+([connecting](connecting.md#tart-from-another-machine)).
 
 Inbound default-deny is opt-in, enforced on the host. Once installed by
 `asbx ingress setup`, the asbx-owned nftables table `inet asbx` drops every
@@ -115,14 +168,16 @@ is dropped.
 | Adopted   | Forwarding into the bridge only. Host input and other routing stay yours.                               |
 
 The generated SSH configs, client configs and pinned addresses are built
-only from the instance name, Incus host data and `config.yaml`. Nothing the
-guest reports ends up in them. By default, access from other machines goes
+only from the instance name, host-side backend data (Incus config, Tart's
+`tart ip --resolver dhcp`, which reads Softnet's root-owned DHCP
+reservations) and `config.yaml`. Nothing the guest reports ends up in
+them. By default, access from other machines goes
 through the host as a jump host
 ([ADR 0004](adr/0004-host-is-the-jump-host.md),
 [ADR 0005](adr/0005-host-enforced-ingress.md),
 [Connecting](connecting.md)).
 
 Known gap: a guest can always make itself reachable through an outbound
-tunnel, for example an iroh relay. The egress ACL filters by IP, so it can't
+tunnel, for example an iroh relay. The egress filter works by IP, so it can't
 prevent that. Treat anything a sandbox serves as reachable by whoever
 controls the guest.

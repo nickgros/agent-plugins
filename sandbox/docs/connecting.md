@@ -1,12 +1,12 @@
 # Connecting
 
-## From the Incus host
+## From the host
 
 `asbx up <group>` writes `~/.ssh/agent-sandbox.d/<instance>.conf`, for
 example `sandbox-demo.conf`. `asbx init` already made `~/.ssh/config`
 include that directory. The instance name is then an ordinary SSH host
-alias. It connects to `<instance>.incus` with the key from `asbx init` and a
-dedicated `known_hosts`.
+alias, with the key from `asbx init` and a dedicated `known_hosts`. Incus:
+it connects to `<instance>.incus`. Tart: see [below](#tart-macos).
 
 - **CLI:** `asbx ssh <group> [cmd...]`, or `ssh sandbox-demo`.
 - **VSCode:** run *Remote-SSH: Connect to Host*, pick `sandbox-demo`, and
@@ -19,14 +19,42 @@ An interactive SSH login starts in `/workspace` instead of the home
 directory. `ssh <host> <cmd>`, scp and IDE server bootstraps have no
 terminal and keep starting in the home directory.
 
-`asbx shell <group>` is an `incus exec` shell, for when SSH is broken.
+`asbx shell <group>` is an `incus exec` / `tart exec` shell, for when SSH is
+broken.
+
+### Tart (macOS)
+
+A Tart sandbox's IP changes on every start (Softnet picks a fresh subnet),
+so the stanza has no `HostName`:
+
+```
+Host sandbox-demo
+    ProxyCommand /usr/bin/env PATH=<tart's dir>:/usr/bin:/bin <python3> <asbx path> ssh-proxy sandbox-demo
+    HostKeyAlias sandbox-demo
+    ...
+```
+
+`asbx ssh-proxy` asks `tart ip --resolver dhcp` for the current address at
+connect time and relays the connection to its port 22. That address comes
+from Softnet's root-owned DHCP reservations, never from the guest agent
+([ADR 0006](adr/0006-one-backend-per-host-os.md)). `HostKeyAlias` stores
+the host key under the instance name, so the known-hosts entry survives
+the address change. The command uses absolute paths (the Python running
+asbx and the `sandbox/asbx` script) and sets its own `PATH`, with the
+directory `tart` was found in, so it works from a shell without
+`~/.local/bin` or Homebrew on PATH. When `ASBX_CONFIG_DIR` is set while
+`up` writes the stanza, the command sets it too.
+
+No name-resolution setup is needed.
 
 ## From another machine
 
-Sandboxes are not on your tailnet or LAN. The Incus host is the jump host
+Sandboxes are not on your tailnet or LAN. The host is the jump host
 ([ADR 0004](adr/0004-host-is-the-jump-host.md)). Reach the host however you
-normally do, for example over Tailscale. From there, SSH continues to
-`<instance>.incus`, which only the host can resolve.
+normally do, for example over Tailscale. Incus: from there, SSH continues to
+`<instance>.incus`, which only the host can resolve. Tart: from there, the
+Mac's own `asbx ssh-proxy` relays to the sandbox; see
+[Tart: from another machine](#tart-from-another-machine).
 
 1. Add the other machine's public key to `config.yaml`. Use a full
    `authorized_keys` line with no options:
@@ -67,14 +95,37 @@ VSCode Remote-SSH honours `ProxyJump` from this file. JetBrains Gateway has
 not been checked.
 
 Host-key checking is off in this stanza because `rm` and `rebuild` clean
-only the Incus host's known-hosts file. Without it, the other machine would
+only the host's known-hosts file. Without it, the other machine would
 hit `REMOTE HOST IDENTIFICATION HAS CHANGED` after every rebuild. The cost is
 that the guest's host key is not verified on the last hop. That hop runs
 from your own jump host, over the bridge on that host.
 
+### Tart: from another machine
+
+The Mac has no name it resolves for a sandbox, so on Tart `--jump` prints a
+stanza whose `ProxyCommand` runs the Mac's own proxy command (the one in
+its generated config) over ssh, instead of a `ProxyJump`. This needs Remote
+Login (sshd) on the Mac. Steps 1 to 3 above are otherwise the same:
+
+```
+$ asbx ssh-config demo --jump you@mac
+Host sandbox-demo
+    ProxyCommand ssh you@mac '/usr/bin/env PATH=/opt/homebrew/bin:/usr/bin:/bin /usr/bin/python3 /Users/you/agent-config/sandbox/asbx ssh-proxy sandbox-demo'
+    User agent
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+    LogLevel ERROR
+```
+
+The command on the Mac uses absolute paths and sets its own `PATH`, so it
+works in a non-interactive ssh session there. Host-key checking is off for
+the same reason as above. `--direct` errors on Tart: no address is pinned.
+
 ## Direct access over an ingress interface
 
-This is opt-in. It gives other machines a direct path to sandbox IPs, for
+Linux (Incus) only. This is opt-in. It gives other machines a direct path to sandbox IPs, for
 any IPv4 protocol, including UDP (QUIC, mosh). The host's firewall admits
 only traffic arriving on an ingress interface
 ([security](security.md#network-ingress),

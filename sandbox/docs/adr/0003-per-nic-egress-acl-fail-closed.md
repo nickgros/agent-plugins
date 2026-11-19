@@ -1,5 +1,7 @@
 # Egress is a per-NIC Incus ACL that fails closed
 
+Superseded in part by [ADR 0006](0006-one-backend-per-host-os.md): on macOS, Softnet rules on `tart run` replace the ACL; fail-closed still holds.
+
 Guests must not reach the host's LAN, tailnet or other sandboxes. Egress is
 filtered by one shared Incus network ACL attached to each sandbox's NIC
 (`security.acls`). If Incus can't attach it, `up` fails. There is no fallback,

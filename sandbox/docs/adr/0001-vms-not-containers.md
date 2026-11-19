@@ -1,5 +1,7 @@
 # Sandboxes are Incus VMs, not containers
 
+Superseded in part by [ADR 0006](0006-one-backend-per-host-os.md): on macOS the VMs are Tart, not Incus.
+
 The threat model has two parts. One is an over-eager agent holding
 production credentials, or taking down the host. The other is prompt
 injection steering the agent. The agent gets root and Docker inside the

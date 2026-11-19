@@ -16,17 +16,20 @@ does not reach an existing `config.yaml`. Add the new entries yourself.
 
 | Key                         | Default                                     | Meaning                                                                                                     |
 | --------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `backend`                   | `auto`                                      | VM service: `incus`, `tart`, or `auto` (Tart on macOS, Incus on Linux) ([ADR 0006](adr/0006-one-backend-per-host-os.md)) |
 | `guest_user`                | `agent`                                     | Guest account. Used in `/home/<guest_user>` paths and the SSH `User`. Baked in at `build-base`.             |
 | `instance_prefix`           | `sandbox-`                                  | Instance name is `<prefix><manifest name>`                                                                  |
-| `image_alias`               | `agent-sandbox-base`                        | Rolling alias `build-base` publishes and `up` creates from                                                  |
-| `base_image_source`         | `images:debian/13/cloud`                    | Image `build-base` starts from                                                                              |
+| `image_alias`               | `agent-sandbox-base`                        | Incus: rolling alias `build-base` publishes and `up` creates from. Tart: name of the base VM.               |
+| `base_image_source`         | `images:debian/13/cloud`                    | Incus image `build-base` starts from                                                                        |
+| `tart.base_image_source`    | `ghcr.io/cirruslabs/debian:trixie`          | Tart image `build-base` starts from                                                                         |
+| `tart.softnet_dir`          | `/usr/local/libexec/asbx`                   | Root-owned directory holding the setuid `softnet` ([host setup](host-setup.md#softnet))                    |
 | `shell`                     | `bash`                                      | Guest login shell for every sandbox: `bash` or `zsh`. See [zsh](#zsh-shell).                                |
-| `network.name`              | `incusbr0`                                  | Incus bridge the sandboxes attach to                                                                        |
-| `network.acl`               | `asbx-egress`                               | Name of the egress ACL                                                                                      |
-| `network.dns_domain`        | `incus`                                     | Bridge `dns.domain`. SSH `HostName` is `<instance>.<dns_domain>`.                                           |
-| `network.block_cidrs`       | RFC1918, link-local, `100.64.0.0/10`, ULA   | Egress drop list ([security](security.md#network-egress))                                                   |
-| `network.ingress.interfaces` | `[]`                                     | Adopted ingress interfaces you run, e.g. `[tailscale0]`. Kernel WireGuard or `tun` only ([security](security.md#network-ingress)). |
-| `network.ingress.wireguard.enabled` | `false`                           | Add the asbx-managed WireGuard interface to ingress                                                         |
+| `network.name`              | `incusbr0`                                  | Incus only. Bridge the sandboxes attach to                                                                  |
+| `network.acl`               | `asbx-egress`                               | Incus only. Name of the egress ACL                                                                          |
+| `network.dns_domain`        | `incus`                                     | Incus only. Bridge `dns.domain`. SSH `HostName` is `<instance>.<dns_domain>`.                               |
+| `network.block_cidrs`       | RFC1918, link-local, `100.64.0.0/10`, ULA   | Egress drop list, both backends ([security](security.md#network-egress)). Tart uses only the IPv4 entries; it drops all IPv6. |
+| `network.ingress.interfaces` | `[]`                                     | Incus only. Adopted ingress interfaces you run, e.g. `[tailscale0]`. Kernel WireGuard or `tun` only ([security](security.md#network-ingress)). |
+| `network.ingress.wireguard.enabled` | `false`                           | Incus only. Add the asbx-managed WireGuard interface to ingress. The other `network.ingress.wireguard.*` keys are Incus-only too. |
 | `network.ingress.wireguard.interface` | `asbx0`                         | Managed WireGuard interface name; `wg-quick@<interface>`                                                    |
 | `network.ingress.wireguard.address` | `10.99.0.1/24`                    | Host's tunnel address. Client addresses are `/32`s inside it.                                               |
 | `network.ingress.wireguard.listen_port` | `51820`                       | UDP port the host listens on                                                                                |
@@ -39,7 +42,7 @@ does not reach an existing `config.yaml`. Add the new entries yourself.
 | `defaults.resources`        | `cpu: 4`, `memory: 8GiB`, `disk: 30GiB`     | Per-sandbox limits, overridable per manifest. `disk` also sizes the base image build.                       |
 | `defaults.auth`             | `[github-gh, aws-creds]`                    | Auth providers. A manifest's `auth` replaces this list.                                                     |
 | `defaults.mounts`           | `~/.agents/skills` read-only                | Mounts for every sandbox. A manifest entry with the same `guest` path replaces one.                         |
-| `defaults.copy_binaries`    | `[]`                                        | Host binaries `build-base` copies into the guest user's `~/.local/bin`. Missing ones are skipped with a warning. omp is installed in the image, not copied. |
+| `defaults.copy_binaries`    | `[]`                                        | Host binaries `build-base` copies into the guest user's `~/.local/bin`. Missing and non-ELF (e.g. macOS) ones are skipped with a warning. omp is installed in the image, not copied. |
 | `defaults.env`              | `{}`                                        | Guest environment for every sandbox                                                                         |
 | `defaults.git.name`/`email` | empty                                       | Guest git identity. Empty means the host's `git config user.name`/`user.email`.                             |
 | `defaults.tools`            | `{}`                                        | mise tool to version for every sandbox, e.g. `maven: "3.9"`. A manifest's `tools` wins per tool ([manifest](manifest.md#tools)). |
