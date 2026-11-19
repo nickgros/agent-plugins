@@ -1,29 +1,28 @@
-"""Guest-side operations: acting on a live instance's OS — mounts,
-cloud-init rendering, agent/cloud-init readiness, and guest env/git identity."""
+"""Guest-side operations: acting on a live sandbox's OS through a
+`backend.Guest` (hostname, `authorized_keys`, env, shell, git identity), plus
+the mount readability rule every backend applies."""
 from __future__ import annotations
 
 import json
 import re
 import stat
-import time
 from pathlib import Path
 from typing import Optional
 
 from . import config
 from . import host
 from . import ui
+from .backend import Guest
 from .errors import AsbxError
-from .incus import Incus
-from .manifest import Mount
 
 
 # ---------------------------------------------------------------------------
-# Mount readability check (pure, testable without Incus)
+# Mount readability check (pure, testable without a VM)
 # ---------------------------------------------------------------------------
 
 def mount_readable_error(host_path: Path) -> Optional[str]:
     """Checks the mount source directory itself. Ancestor directories are
-    NOT walked: virtiofs mounts are served by the Incus daemon running as
+    NOT walked: virtiofs mounts are served by the VM service running as
     host root, so parent-directory traversal permissions never block the
     guest.
 
@@ -77,87 +76,28 @@ def render_mise_config(tools: dict[str, str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_mise_config(incus: Incus, instance: str, tools: dict[str, str]) -> None:
+def write_mise_config(g: Guest, tools: dict[str, str]) -> None:
     """System scope (not ~/.config/mise) so the agent's own `mise use -g` edits
     are never clobbered."""
-    incus.exec_in(instance, ["mkdir", "-p", "/etc/mise"], user="root")
-    incus.push_text(instance, MISE_SYSTEM_CONFIG, render_mise_config(tools),
-                    mode="0644", uid=0, gid=0)
+    g.exec(["mkdir", "-p", "/etc/mise"], user="root")
+    g.push_text(MISE_SYSTEM_CONFIG, render_mise_config(tools), mode="0644", uid=0, gid=0)
 
 
-def render_instance_cloud_init(instance: str, guest_user: str, pubkey: str) -> str:
-    return (
-        "#cloud-config\n"
-        f"hostname: {instance}\n"
-        "users:\n"
-        f"  - name: {guest_user}\n"
-        "    ssh_authorized_keys:\n"
-        f"      - {pubkey}\n"
-        "runcmd:\n"
-        "  - systemctl restart ssh\n"
-    )
+def wait_for_cloud_init(g: Guest) -> None:
+    """Waits for the image's own cloud-init at boot (on a fresh sandbox it
+    regenerates the ssh host keys `build-base` removed). asbx passes no
+    user-data; this only surfaces image failures."""
+    g.exec(["cloud-init", "status", "--wait"], user="root", check=False)
+    status = g.exec(["cloud-init", "status"], user="root", check=False)
+    if "error" in (status.stdout or ""):
+        tail = g.exec(["cloud-init", "status", "--long"], user="root", check=False)
+        raise AsbxError(f"cloud-init failed in {g.instance}:\n{tail.stdout}")
 
 
-def wait_for_agent(incus: Incus, instance: str, attempts: int = 60, interval: float = 2.0) -> None:
-    last_stderr = ""
-    for _ in range(attempts):
-        proc = incus.run("exec", instance, "--", "true", check=False)
-        if proc.returncode == 0:
-            return
-        # Early boot produces a mix of "VM agent isn't running", connection
-        # refusals, and transient errors, so every failure is retried; the last
-        # one is surfaced when the attempt budget runs out.
-        last_stderr = (proc.stderr or "").strip()
-        time.sleep(interval)
-    suffix = f"\n{last_stderr}" if last_stderr else ""
-    raise AsbxError(f"incus agent in {instance} did not come up in time{suffix}")
-
-
-def wait_for_cloud_init(incus: Incus, instance: str) -> None:
-    incus.run("exec", instance, "--", "cloud-init", "status", "--wait", check=False)
-    status = incus.run("exec", instance, "--", "cloud-init", "status", check=False)
-    if "error" in status.stdout:
-        tail = incus.run("exec", instance, "--", "cloud-init", "status", "--long", check=False)
-        raise AsbxError(f"cloud-init failed in {instance}:\n{tail.stdout}")
-
-
-def sync_mounts(incus: Incus, instance: str, mounts: list[Mount]) -> bool:
-    """Makes the instance's `mnt-*` disk devices match `mounts`. Returns True
-    when devices changed, meaning the caller must restart the instance for the
-    guest to see them."""
-    desired: dict[str, dict[str, str]] = {}
-    for i, mount in enumerate(mounts):
-        host_path = config.expand(mount.host)
-        if not host_path.exists():
-            raise AsbxError(f"mount {mount.host}: host path does not exist")
-        err = mount_readable_error(host_path)
-        if err:
-            raise AsbxError(err)
-        desired[f"mnt-{i}"] = {
-            "type": "disk",
-            "source": str(host_path),
-            "path": mount.guest,
-            "readonly": "true",
-        }
-
-    existing = {name: dev for name, dev in incus.devices(instance).items()
-                if name.startswith("mnt-")}
-    if existing == desired:
-        return False
-
-    for name in existing:
-        incus.device_remove(instance, name)
-    for name, dev in desired.items():
-        proc = incus.device_add(
-            instance, name, "disk",
-            f"source={dev['source']}", f"path={dev['path']}", "readonly=true",
-        )
-        if proc.returncode != 0:
-            raise AsbxError(
-                f"mount {dev['source']} -> {dev['path']}: incus refused the device:\n"
-                f"{(proc.stderr or '').strip()}"
-            )
-    return True
+def set_hostname(g: Guest) -> None:
+    """The guest's hostname is its sandbox name; set on every `up`, since no
+    backend passes it in at creation."""
+    g.exec(["hostnamectl", "set-hostname", g.instance], user="root")
 
 
 _PUBKEY_RE = re.compile(r"^(ssh-|ecdsa-|sk-)\S+ \S+( [^\r\n]*)?$")
@@ -182,20 +122,19 @@ def render_authorized_keys(primary: str, extras: list[str]) -> str:
     return "# managed by asbx: rewritten on every 'asbx up'\n" + "\n".join(keys) + "\n"
 
 
-def sync_authorized_keys(incus: Incus, instance: str, cfg: dict) -> None:
+def sync_authorized_keys(g: Guest, cfg: dict) -> None:
     """Makes the guest user's authorized_keys the asbx key plus
-    `ssh.extra_pubkeys`, on every `up`, so a key added to config reaches an
-    existing sandbox."""
+    `ssh.extra_pubkeys`, on every `up`. This is the only way keys reach a
+    sandbox, so a key added to config reaches an existing one too."""
     guest_user = cfg["guest_user"]
     pub_path = Path(str(config.expand(cfg["ssh"]["key"])) + ".pub")
     if not pub_path.exists():
         raise AsbxError(f"ssh public key not found at {pub_path}; run 'asbx init' first")
     body = render_authorized_keys(pub_path.read_text(), cfg["ssh"]["extra_pubkeys"])
-    uid = incus.uid_of(instance, guest_user)
+    uid = g.uid_of(guest_user)
     ssh_dir = f"/home/{guest_user}/.ssh"
-    incus.exec_in(instance, ["install", "-d", "-m", "0700", "-o", str(uid), "-g", str(uid), ssh_dir],
-                  user="root")
-    incus.push_text(instance, f"{ssh_dir}/authorized_keys", body, mode="0600", uid=uid, gid=uid)
+    g.exec(["install", "-d", "-m", "0700", "-o", str(uid), "-g", str(uid), ssh_dir], user="root")
+    g.push_text(f"{ssh_dir}/authorized_keys", body, mode="0600", uid=uid, gid=uid)
 
 
 WORKSPACE_CD_PATH = "/etc/profile.d/asbx-cwd.sh"
@@ -206,40 +145,37 @@ PASEO_UNIT = "asbx-paseo.service"
 def render_workspace_cd(workspace: str = "/workspace") -> str:
     """Interactive ssh logins start in /workspace instead of $HOME. Gated on a
     tty so `ssh host cmd`, scp and VSCode's server bootstrap are untouched, and
-    on SSH_CONNECTION so `incus exec` shells and the provision hook are too."""
+    on SSH_CONNECTION so `asbx shell` and the provision hook are too."""
     return ("# managed by asbx: rewritten on every 'asbx up'\n"
             f'if [ -n "$SSH_CONNECTION" ] && [ -t 0 ] && [ "$PWD" = "$HOME" ] && [ -d {workspace} ]; then\n'
             f"    cd {workspace}\n"
             "fi\n")
 
 
-def write_guest_env(incus: Incus, instance: str, cfg: dict, manifest_env: dict) -> None:
+def write_guest_env(g: Guest, cfg: dict, manifest_env: dict) -> None:
     guest_user = cfg["guest_user"]
     env = {**cfg["harness_env"], **cfg["defaults"]["env"], **manifest_env}
-    incus.push_text(instance, ENV_FILE_PATH, render_env_file(env),
-                    mode="0644", uid=0, gid=0)
-    incus.push_text(instance, WORKSPACE_CD_PATH, render_workspace_cd(),
-                    mode="0644", uid=0, gid=0)
-    incus.push_text(instance, "/etc/environment", render_etc_environment(guest_user),
-                    mode="0644", uid=0, gid=0)
+    g.push_text(ENV_FILE_PATH, render_env_file(env), mode="0644", uid=0, gid=0)
+    g.push_text(WORKSPACE_CD_PATH, render_workspace_cd(), mode="0644", uid=0, gid=0)
+    g.push_text("/etc/environment", render_etc_environment(guest_user), mode="0644", uid=0, gid=0)
 
     claude_settings = json.dumps({"env": {**cfg["harness_env"], **manifest_env}}, indent=2) + "\n"
-    guest_uid = incus.uid_of(instance, guest_user)
-    incus.exec_in(instance, ["mkdir", "-p", f"/home/{guest_user}/.claude"], user=guest_user)
-    incus.push_text(instance, f"/home/{guest_user}/.claude/settings.json", claude_settings,
-                    mode="0644", uid=guest_uid, gid=guest_uid)
+    guest_uid = g.uid_of(guest_user)
+    g.exec(["mkdir", "-p", f"/home/{guest_user}/.claude"], user=guest_user)
+    g.push_text(f"/home/{guest_user}/.claude/settings.json", claude_settings,
+                mode="0644", uid=guest_uid, gid=guest_uid)
 
 
-def start_paseo(incus: Incus, instance: str) -> None:
+def start_paseo(g: Guest) -> None:
     """Starts the base image's Paseo daemon unit once the guest env exists.
     `start` leaves a running daemon, and its agents, alone; env changes reach
     it on the next boot or `systemctl restart`."""
-    proc = incus.exec_in(instance, ["systemctl", "start", PASEO_UNIT], user="root", check=False)
+    proc = g.exec(["systemctl", "start", PASEO_UNIT], user="root", check=False)
     if proc.returncode != 0:
-        ui.warn(f"{instance}: paseo daemon not started; images built before {PASEO_UNIT} lack it "
+        ui.warn(f"{g.instance}: paseo daemon not started; images built before {PASEO_UNIT} lack it "
                 f"(asbx build-base, then asbx rebuild):\n{(proc.stderr or '').strip()}")
         return
-    ui.ok(f"{instance}: paseo daemon running")
+    ui.ok(f"{g.instance}: paseo daemon running")
 
 
 ZPROFILE_PATH = "/etc/zsh/zprofile"
@@ -253,28 +189,27 @@ def render_zprofile() -> str:
             '[[ -x /usr/local/bin/mise ]] && eval "$(/usr/local/bin/mise activate zsh)"\n')
 
 
-def configure_shell(incus: Incus, instance: str, cfg: dict) -> None:
+def configure_shell(g: Guest, cfg: dict) -> None:
     name = cfg["shell"]
     path = config.SHELL_PATHS[name]
     guest_user = cfg["guest_user"]
     if name == "zsh":
-        if incus.exec_in(instance, ["test", "-x", path], user="root", check=False).returncode != 0:
-            ui.ok(f"{instance}: installing zsh")
-            proc = incus.exec_in(
-                instance,
+        if g.exec(["test", "-x", path], user="root", check=False).returncode != 0:
+            ui.ok(f"{g.instance}: installing zsh")
+            proc = g.exec(
                 ["bash", "-c", "apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q zsh"],
                 user="root", check=False)
             if proc.returncode != 0:
-                raise AsbxError(f"installing zsh in {instance} failed (exit {proc.returncode})"
+                raise AsbxError(f"installing zsh in {g.instance} failed (exit {proc.returncode})"
                                 + (f"\n{(proc.stderr or '').strip()}" if proc.stderr else ""))
-        incus.push_text(instance, ZPROFILE_PATH, render_zprofile(), mode="0644", uid=0, gid=0)
+        g.push_text(ZPROFILE_PATH, render_zprofile(), mode="0644", uid=0, gid=0)
         # Without any rc file, zsh starts its interactive newuser wizard.
-        incus.exec_in(instance, ["bash", "-c", "test -e ~/.zshrc || : > ~/.zshrc"], user=guest_user)
-    incus.exec_in(instance, ["usermod", "-s", path, guest_user], user="root")
-    ui.ok(f"{instance}: login shell {name}")
+        g.exec(["bash", "-c", "test -e ~/.zshrc || : > ~/.zshrc"], user=guest_user)
+    g.exec(["usermod", "-s", path, guest_user], user="root")
+    ui.ok(f"{g.instance}: login shell {name}")
 
 
-def write_git_identity(incus: Incus, instance: str, cfg: dict) -> None:
+def write_git_identity(g: Guest, cfg: dict) -> None:
     name = cfg["defaults"]["git"]["name"]
     email = cfg["defaults"]["git"]["email"]
     if not name:
@@ -283,8 +218,8 @@ def write_git_identity(incus: Incus, instance: str, cfg: dict) -> None:
         email = host.git_config_get("user.email")
     guest_user = cfg["guest_user"]
     if name:
-        incus.exec_in(instance, ["git", "config", "--global", "user.name", name], user=guest_user)
+        g.exec(["git", "config", "--global", "user.name", name], user=guest_user)
     if email:
-        incus.exec_in(instance, ["git", "config", "--global", "user.email", email], user=guest_user)
-    incus.exec_in(instance, ["git", "config", "--global", "init.defaultBranch", "main"], user=guest_user)
-    incus.exec_in(instance, ["git", "config", "--global", "push.autoSetupRemote", "true"], user=guest_user)
+        g.exec(["git", "config", "--global", "user.email", email], user=guest_user)
+    g.exec(["git", "config", "--global", "init.defaultBranch", "main"], user=guest_user)
+    g.exec(["git", "config", "--global", "push.autoSetupRemote", "true"], user=guest_user)

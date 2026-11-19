@@ -10,6 +10,7 @@ from asbxlib import config, ingress
 from asbxlib.errors import AsbxError
 from asbxlib.host import InterfaceFacts
 
+from asbxlib.incusbackend import IncusBackend
 from fake_incus import FakeIncus
 
 HOST_KEY = "aG9zdCBrZXkgZm9yIGFzYnggdGVzdHMgMzIgYnl0ZXM="
@@ -272,7 +273,7 @@ def test_install_declined_installs_nothing(sudo_log, monkeypatch):
 
 def test_adopt_refuses_the_lan_nic(sudo_log):
     with pytest.raises(AsbxError, match="cannot adopt enp42s0: it carries the host's default route"):
-        ingress.cmd_ingress_setup(FakeIncus(), _cfg(), create=False, adopt="enp42s0",
+        ingress.cmd_ingress_setup(IncusBackend(FakeIncus()), _cfg(), create=False, adopt="enp42s0",
                                   print_only=False, yes=True)
     assert sudo_log == {"files": {}, "commands": []}
 
@@ -280,7 +281,7 @@ def test_adopt_refuses_the_lan_nic(sudo_log):
 def test_adopt_records_the_interface_in_config_then_installs_rules_for_it(sudo_log, config_root):
     config.config_path().write_text("guest_user: agent\n")
 
-    ingress.cmd_ingress_setup(FakeIncus(), _cfg(), create=False, adopt="tailscale0",
+    ingress.cmd_ingress_setup(IncusBackend(FakeIncus()), _cfg(), create=False, adopt="tailscale0",
                               print_only=False, yes=True)
 
     assert config.load_config()["network"]["ingress"]["interfaces"] == ["tailscale0"]
@@ -290,7 +291,7 @@ def test_adopt_records_the_interface_in_config_then_installs_rules_for_it(sudo_l
 def test_adopt_print_only_leaves_config_alone_and_prints_rules_for_the_interface(sudo_log, config_root, capsys):
     config.config_path().write_text("guest_user: agent\n")
 
-    ingress.cmd_ingress_setup(FakeIncus(), _cfg(), create=False, adopt="tailscale0",
+    ingress.cmd_ingress_setup(IncusBackend(FakeIncus()), _cfg(), create=False, adopt="tailscale0",
                               print_only=True, yes=True)
 
     assert config.config_path().read_text() == "guest_user: agent\n"
@@ -303,7 +304,7 @@ def test_create_enables_managed_wireguard_and_installs_its_config(sudo_log, conf
     fake = FakeIncus()
     fake.stub("network", "get", "ipv4.address", stdout="10.210.86.1/24\n")
 
-    ingress.cmd_ingress_setup(fake, _cfg(), create=True, adopt=None, print_only=False, yes=True)
+    ingress.cmd_ingress_setup(IncusBackend(fake), _cfg(), create=True, adopt=None, print_only=False, yes=True)
 
     assert config.load_config()["network"]["ingress"]["wireguard"]["enabled"] is True
     assert "/etc/wireguard/asbx0.conf" in sudo_log["files"]
@@ -314,7 +315,7 @@ def test_adopt_picks_from_the_listed_candidates(sudo_log, config_root, monkeypat
     config.config_path().write_text("guest_user: agent\n")
     monkeypatch.setattr(ingress.ui, "choose", lambda q, options: options[-1])
 
-    ingress.cmd_ingress_setup(FakeIncus(), _cfg(), create=False, adopt="", print_only=False, yes=True)
+    ingress.cmd_ingress_setup(IncusBackend(FakeIncus()), _cfg(), create=False, adopt="", print_only=False, yes=True)
 
     assert config.load_config()["network"]["ingress"]["interfaces"] == ["wg1"]
 
@@ -326,7 +327,7 @@ def test_create_refuses_a_tunnel_range_that_overlaps_the_bridge(sudo_log, config
     fake.stub("network", "get", "ipv4.address", stdout="10.210.86.1/24\n")
 
     with pytest.raises(AsbxError, match="overlaps"):
-        ingress.cmd_ingress_setup(fake, cfg, create=True, adopt=None, print_only=False, yes=True)
+        ingress.cmd_ingress_setup(IncusBackend(fake), cfg, create=True, adopt=None, print_only=False, yes=True)
     assert sudo_log == {"files": {}, "commands": []}
 
 
@@ -342,7 +343,7 @@ def test_client_config_routes_only_the_bridge_subnet_to_the_host(monkeypatch, co
     cfg = _cfg(managed=True, endpoint="host.example:51820",
                clients={"laptop": {"public_key": CLIENT_KEY, "address": "10.99.0.2"}})
 
-    ingress.cmd_client_config(fake, cfg, "laptop")
+    ingress.cmd_client_config(IncusBackend(fake), cfg, "laptop")
 
     out = capsys.readouterr().out
     assert "Address = 10.99.0.2/32" in out
@@ -354,7 +355,7 @@ def test_client_config_requires_an_endpoint(config_root):
     cfg = _cfg(managed=True, clients={"laptop": {"public_key": CLIENT_KEY, "address": "10.99.0.2"}})
 
     with pytest.raises(AsbxError, match="endpoint is empty"):
-        ingress.cmd_client_config(FakeIncus(), cfg, "laptop")
+        ingress.cmd_client_config(IncusBackend(FakeIncus()), cfg, "laptop")
 
 
 @pytest.mark.parametrize("managed, client, key, match", [
@@ -369,7 +370,7 @@ def test_client_config_refuses(config_root, managed, client, key, match):
                clients={"laptop": {"public_key": CLIENT_KEY, "address": "10.99.0.2"}})
 
     with pytest.raises(AsbxError, match=match):
-        ingress.cmd_client_config(FakeIncus(), cfg, client)
+        ingress.cmd_client_config(IncusBackend(FakeIncus()), cfg, client)
 
 
 def test_install_refuses_a_host_key_file_that_is_not_a_wireguard_key(sudo_log):

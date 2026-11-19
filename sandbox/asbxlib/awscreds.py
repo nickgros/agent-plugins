@@ -3,14 +3,15 @@
 The host logs in to SSO and exports short-lived credentials for the allowed
 profiles (`Manifest.aws_profiles`); this module pushes them into the guest as
 `credential_process` files. The guest never holds an SSO token or any profile
-outside that set, and there is no guest-to-host channel. A systemd user timer
-on the host re-pushes them before they expire, and a systemd path unit
-re-pushes them as soon as `aws sso login` rewrites the SSO token cache.
+outside that set, and there is no guest-to-host channel. A host job re-pushes
+them before they expire and as soon as `aws sso login` rewrites the SSO token
+cache: systemd user units on Linux, a LaunchAgent on macOS.
 """
 from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,15 +20,18 @@ from typing import Callable, Optional
 from . import config
 from . import host
 from . import hostsetup
+from . import launchd
 from . import manifest
 from . import ui
+from .backend import RUNNING, Guest, SandboxBackend
 from .errors import AsbxError
-from .incus import Incus
 
 PROVIDER = "aws-creds"
 TIMER_UNIT = "asbx-aws-refresh.timer"
 SERVICE_UNIT = "asbx-aws-refresh.service"
 PATH_UNIT = "asbx-aws-refresh.path"
+LAUNCHD_LABEL = "com.asbx.aws-refresh"
+REFRESH_INTERVAL_S = 600
 # Where the AWS CLI writes SSO tokens; a login or silent refresh changes it.
 SSO_CACHE_WATCH = "%h/.aws/sso/cache"
 WARN_BELOW = timedelta(minutes=15)
@@ -80,27 +84,27 @@ def render_guest_aws_config(guest_user: str, regions: dict[str, str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def push(incus: Incus, instance: str, guest_user: str, creds: dict[str, tuple[str, str]]) -> None:
+def push(g: Guest, guest_user: str, creds: dict[str, tuple[str, str]]) -> None:
     """Writes each profile's credentials into the guest, replaces the guest's
     `~/.aws/config`, and removes credential files for profiles not in `creds`."""
-    uid = incus.uid_of(instance, guest_user)
+    uid = g.uid_of(guest_user)
     home = f"/home/{guest_user}"
     aws_dir = guest_creds_dir(guest_user)
-    incus.exec_in(instance, ["install", "-d", "-m", "0700", "-o", str(uid), "-g", str(uid),
-                              f"{home}/.asbx", aws_dir, f"{home}/.aws"], user="root")
+    g.exec(["install", "-d", "-m", "0700", "-o", str(uid), "-g", str(uid),
+            f"{home}/.asbx", aws_dir, f"{home}/.aws"], user="root")
     for profile, (body, _region) in creds.items():
         tmp = f"{aws_dir}/{profile}.json.tmp"
-        incus.push_text(instance, tmp, body, mode="0600", uid=uid, gid=uid)
+        g.push_text(tmp, body, mode="0600", uid=uid, gid=uid)
         # Atomic rename: `cat` in credential_process never sees a half-written file.
-        incus.exec_in(instance, ["mv", "-f", tmp, guest_creds_file(guest_user, profile)], user=guest_user)
+        g.exec(["mv", "-f", tmp, guest_creds_file(guest_user, profile)], user=guest_user)
     regions = {p: region for p, (_body, region) in creds.items()}
-    incus.push_text(instance, f"{home}/.aws/config", render_guest_aws_config(guest_user, regions),
-                    mode="0600", uid=uid, gid=uid)
+    g.push_text(f"{home}/.aws/config", render_guest_aws_config(guest_user, regions),
+                mode="0600", uid=uid, gid=uid)
     prune = ["find", aws_dir, "-maxdepth", "1", "-type", "f", "-name", "*.json"]
     for profile in creds:
         prune += ["!", "-name", f"{profile}.json"]
     prune.append("-delete")
-    incus.exec_in(instance, prune, user=guest_user)
+    g.exec(prune, user=guest_user)
 
 
 def aws_targets(cfg: dict, group: Optional[str]) -> list[tuple[str, manifest.Manifest]]:
@@ -124,7 +128,7 @@ def aws_targets(cfg: dict, group: Optional[str]) -> list[tuple[str, manifest.Man
     return targets
 
 
-def refresh(incus: Incus, guest_user: str, targets: list[manifest.Manifest],
+def refresh(backend: SandboxBackend, guest_user: str, targets: list[manifest.Manifest],
             export: Callable[[str], tuple[str, str]] = export_profile) -> int:
     """Pushes credentials into each running target; each profile is exported
     once per call, and a failed export is remembered rather than retried.
@@ -145,13 +149,13 @@ def refresh(incus: Incus, guest_user: str, targets: list[manifest.Manifest],
     failed = False
     for target in targets:
         instance = target.instance
-        state = incus.instance_state(instance) if incus.instance_exists(instance) else "absent"
-        if state != "Running":
+        state = backend.state(instance)
+        if state != RUNNING:
             ui.ok(f"{instance}: skipped ({state})")
             continue
         try:
             creds = {p: get(p) for p in target.aws_profiles}
-            push(incus, instance, guest_user, creds)
+            push(backend.guest(instance), guest_user, creds)
         except AsbxError as e:
             ui.warn(f"{instance}: {e}")
             failed = True
@@ -160,14 +164,56 @@ def refresh(incus: Incus, guest_user: str, targets: list[manifest.Manifest],
     return 1 if failed else 0
 
 
-def cmd_aws_refresh(incus: Incus, cfg: dict, group: Optional[str]) -> int:
+def cmd_aws_refresh(backend: SandboxBackend, cfg: dict, group: Optional[str]) -> int:
     targets = [m for _g, m in aws_targets(cfg, group)]
-    return refresh(incus, cfg["guest_user"], targets)
+    return refresh(backend, cfg["guest_user"], targets)
 
 
 def install_timer() -> None:
+    """Installs the host job that runs `aws-refresh` every 10 minutes and
+    shortly after the SSO token cache changes."""
     if not host.which("aws"):
         raise AsbxError("aws CLI not found on the host PATH")
+    if sys.platform == "darwin":
+        _install_launch_agent()
+    else:
+        _install_systemd_units()
+
+
+def refresh_job_status() -> list[tuple[str, bool]]:
+    """(what, is active) for each part of the refresh job, for `doctor`."""
+    if sys.platform == "darwin":
+        return [(f"LaunchAgent {LAUNCHD_LABEL} loaded", launchd.agent_loaded(LAUNCHD_LABEL))]
+    return [(f"{unit} active", host.systemctl_user("is-active", unit).returncode == 0)
+            for unit in (TIMER_UNIT, PATH_UNIT)]
+
+
+def _job_env() -> dict[str, str]:
+    env = {"PATH": os.environ.get("PATH", "")}
+    if os.environ.get(config.CONFIG_DIR_ENV):
+        env[config.CONFIG_DIR_ENV] = os.environ[config.CONFIG_DIR_ENV]
+    return env
+
+
+def refresh_launch_agent_plist() -> bytes:
+    """The macOS refresh job: `aws-refresh` every 10 minutes and whenever the
+    SSO token cache changes. Same 2 s debounce as the systemd path unit:
+    `aws sso login` writes several cache files, and an early push can see a
+    half-written token."""
+    command = (f"sleep 2; exec {shlex.quote(sys.executable)} "
+               f"{shlex.quote(str(hostsetup.ENTRY_POINT))} aws-refresh")
+    return launchd.render_plist(
+        LAUNCHD_LABEL, ["/bin/sh", "-c", command], env=_job_env(),
+        start_interval=REFRESH_INTERVAL_S,
+        watch_paths=[str(Path.home() / ".aws" / "sso" / "cache")])
+
+
+def _install_launch_agent() -> None:
+    path = launchd.install_agent(LAUNCHD_LABEL, refresh_launch_agent_plist())
+    ui.ok(f"installed and loaded {path}")
+
+
+def _install_systemd_units() -> None:
     unit_dir = Path.home() / ".config/systemd/user"
     unit_dir.mkdir(parents=True, exist_ok=True)
 
@@ -175,10 +221,8 @@ def install_timer() -> None:
     # files, and a push that starts on the first one can see a half-written
     # token. Triggers that arrive while the service is active are coalesced.
     service = ["[Unit]", "Description=Push fresh AWS credentials into asbx sandboxes", "",
-               "[Service]", "Type=oneshot",
-               f"Environment=PATH={os.environ.get('PATH', '')}"]
-    if os.environ.get(config.CONFIG_DIR_ENV):
-        service.append(f"Environment={config.CONFIG_DIR_ENV}={os.environ[config.CONFIG_DIR_ENV]}")
+               "[Service]", "Type=oneshot"]
+    service += [f"Environment={k}={v}" for k, v in _job_env().items()]
     service.append("ExecStartPre=/bin/sleep 2")
     service.append(f"ExecStart={sys.executable} {hostsetup.ENTRY_POINT} aws-refresh")
     timer = ["[Unit]", "Description=Refresh AWS credentials in asbx sandboxes every 10 minutes", "",

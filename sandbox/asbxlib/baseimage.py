@@ -1,26 +1,43 @@
 from __future__ import annotations
 
 import json
+import platform
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from typing import Optional
 
 from . import config, guest, ui
+from .backend import Guest, SandboxBackend
 from .errors import AsbxError
-from .incus import Incus
 
 
 # ---------------------------------------------------------------------------
-# Node LTS download resolution (host-side, before rendering cloud-init)
+# Node LTS download resolution (host-side, before rendering the recipe)
 # ---------------------------------------------------------------------------
 
 NODE_PINNED_VERSION = "v24.20.0"
-NODE_PINNED_SHA256 = "2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2"
+# Tarball arch -> sha256 of node-<NODE_PINNED_VERSION>-linux-<arch>.tar.xz.
+NODE_PINNED_SHA256 = {
+    "x64": "2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2",
+    "arm64": "5f4ddab610c1ab2016b3c227cebdbf6d9495161487e4739c7b90090595f465f7",
+}
+
+_NODE_ARCH = {"x86_64": "x64", "amd64": "x64", "arm64": "arm64", "aarch64": "arm64"}
 
 
-def resolve_node_download(fetch_json=None, fetch_text=None) -> tuple[str, str]:
-    """Returns (tarball_url, sha256). Falls back to the pinned pair on any
-    network failure; never raises."""
+def node_arch(machine: str) -> str:
+    """Node's tarball arch for a host `platform.machine()`. Guests run the
+    host's architecture (no emulation), so the host decides."""
+    arch = _NODE_ARCH.get(machine.lower())
+    if arch is None:
+        raise AsbxError(f"unsupported host architecture {machine!r}; asbx supports x86_64 and arm64")
+    return arch
+
+
+def resolve_node_download(arch: Optional[str] = None, fetch_json=None, fetch_text=None) -> tuple[str, str]:
+    """Returns (tarball_url, sha256) for `arch` (default: the host's). Falls
+    back to the pinned pair on any network failure."""
+    arch = arch or node_arch(platform.machine())
     if fetch_json is None:
         def fetch_json():
             with urllib.request.urlopen("https://nodejs.org/dist/index.json", timeout=10) as r:
@@ -39,7 +56,7 @@ def resolve_node_download(fetch_json=None, fetch_text=None) -> tuple[str, str]:
                 break
         if version is None:
             raise ValueError("no LTS entry found in index.json")
-        tarball_name = f"node-{version}-linux-x64.tar.xz"
+        tarball_name = f"node-{version}-linux-{arch}.tar.xz"
         shasums = fetch_text(f"https://nodejs.org/dist/{version}/SHASUMS256.txt")
         sha256 = None
         for line in shasums.splitlines():
@@ -52,12 +69,13 @@ def resolve_node_download(fetch_json=None, fetch_text=None) -> tuple[str, str]:
         return url, sha256
     except (urllib.error.URLError, OSError, ValueError, KeyError, json.JSONDecodeError):
         ui.warn(f"using pinned Node {NODE_PINNED_VERSION} (nodejs.org unreachable)")
-        url = f"https://nodejs.org/dist/{NODE_PINNED_VERSION}/node-{NODE_PINNED_VERSION}-linux-x64.tar.xz"
-        return url, NODE_PINNED_SHA256
+        url = (f"https://nodejs.org/dist/{NODE_PINNED_VERSION}/"
+               f"node-{NODE_PINNED_VERSION}-linux-{arch}.tar.xz")
+        return url, NODE_PINNED_SHA256[arch]
 
 
 # ---------------------------------------------------------------------------
-# Base image cloud-init render
+# Base image recipe
 # ---------------------------------------------------------------------------
 
 def render_paseo_unit(guest_user: str) -> str:
@@ -83,165 +101,165 @@ WantedBy=multi-user.target
 """
 
 
-def render_base_cloud_init(guest_user: str, node_url: str, node_sha256: str) -> str:
-    unit = "".join(f"      {line}\n" if line else "\n" for line in render_paseo_unit(guest_user).splitlines())
-    return f"""#cloud-config
-write_files:
-  - path: /etc/systemd/system/{guest.PASEO_UNIT}
-    permissions: "0644"
-    content: |
-{unit}
-users:
-  - default
-  - name: {guest_user}
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    shell: /bin/bash
-    groups: [sudo, users, docker]
+BASE_PACKAGES = (
+    "git", "curl", "ca-certificates", "gnupg", "build-essential", "jq", "tmux", "ripgrep",
+    "fd-find", "python3", "python3-venv", "python3-pip", "unzip", "xz-utils", "openssh-server",
+    "less", "vim", "zsh", "rsync", "nftables", "sudo",
+)
 
-packages:
-  - git
-  - curl
-  - ca-certificates
-  - gnupg
-  - build-essential
-  - jq
-  - tmux
-  - ripgrep
-  - fd-find
-  - python3
-  - python3-venv
-  - python3-pip
-  - unzip
-  - xz-utils
-  - openssh-server
-  - less
-  - vim
-  - zsh
-  - rsync
-  - nftables
 
-runcmd:
-  # 1. Docker and GitHub CLI official repos
-  - install -m 0755 -d /etc/apt/keyrings
-  - curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
-  - chmod a+r /etc/apt/keyrings/docker.asc
-  - >-
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc]
-    https://download.docker.com/linux/debian trixie stable" > /etc/apt/sources.list.d/docker.list
-  - curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
-  - chmod a+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
-  - >-
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg]
-    https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
-  - apt-get update
-  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin gh
-  # 2. Node LTS into /usr/local (never a shell-profile shim)
-  - curl -fsSLo /tmp/node.tar.xz {node_url}
-  - echo "{node_sha256}  /tmp/node.tar.xz" | sha256sum -c -
-  - mkdir -p /usr/local/lib/nodejs
-  - tar -xJf /tmp/node.tar.xz -C /usr/local/lib/nodejs
-  - bash -c 'mv /usr/local/lib/nodejs/node-* /usr/local/lib/nodejs/node'
-  - ln -sf /usr/local/lib/nodejs/node/bin/node /usr/local/bin/node
-  - ln -sf /usr/local/lib/nodejs/node/bin/npm /usr/local/bin/npm
-  - ln -sf /usr/local/lib/nodejs/node/bin/npx /usr/local/bin/npx
-  - npm config set prefix /usr/local --location=global
-  # 3. mise (per-project toolchains only)
-  - MISE_INSTALL_PATH=/usr/local/bin/mise sh -c "$(curl -fsSL https://mise.run)"
-  - echo 'eval "$(/usr/local/bin/mise activate bash)"' > /etc/profile.d/asbx-mise.sh
-  # 4. AWS CLI v2
-  - curl -fsSLo /tmp/awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
-  - unzip -q -d /tmp /tmp/awscliv2.zip
-  - /tmp/aws/install
-  # 5. Harness CLIs (as root, into /usr/local)
-  - npm i -g @openai/codex @google/gemini-cli @getpaseo/cli
-  # 6. opencode (must not run as root)
-  - runuser -u {guest_user} -- bash -c 'curl -fsSL https://opencode.ai/install | bash'
-  - ln -sf /home/{guest_user}/.opencode/bin/opencode /usr/local/bin/opencode
-  # 6b. omp: installed as the guest user into ~/.local/bin, so `omp update` can replace it
-  - runuser -u {guest_user} -- env HOME=/home/{guest_user} sh -c 'curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.sh | sh -s -- --binary'
-  # 6c. Claude Code: native installer as the guest user (~/.local/bin/claude), so
-  #     `claude update` and T3 Code's update button can replace it
-  - runuser -u {guest_user} -- env HOME=/home/{guest_user} bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
-  # 6d. Paseo: no server-side speech models; clients do dictation locally
-  - runuser -u {guest_user} -- env HOME=/home/{guest_user} paseo daemon config set features.dictation.enabled false
-  # 7. fd-find is installed as fdfind on Debian
-  - ln -sf /usr/bin/fdfind /usr/local/bin/fd
-  # 8. workspace + skill symlinks
-  - mkdir -p /workspace /home/{guest_user}/.asbx /home/{guest_user}/.agents/skills /home/{guest_user}/.claude /home/{guest_user}/.codex /home/{guest_user}/.config
-  - ln -sf /home/{guest_user}/.agents/skills /home/{guest_user}/.claude/skills
-  - ln -sf /home/{guest_user}/.agents/skills /home/{guest_user}/.codex/skills
-  - chown -R {guest_user}:{guest_user} /workspace /home/{guest_user}
-  # 9. ssh
-  - systemctl enable ssh {guest.PASEO_UNIT}
-  - sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+def render_base_script(guest_user: str, node_url: str, node_sha256: str) -> str:
+    """The whole base-image recipe as one bash script, run as root on a fresh
+    Debian VM by `prepare_build_vm`. One script rather than a cloud-config so
+    every backend can run it the same way. It is the only place that turns
+    ssh password logins off (step 12), on every backend."""
+    u = guest_user
+    home = f"/home/{u}"
+    as_user = f"runuser -u {u} -- env HOME={home}"
+    return f"""#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+# 1. Base packages
+apt-get update
+apt-get install -y {' '.join(BASE_PACKAGES)}
+
+# 2. Docker and GitHub CLI official repos
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian trixie stable" > /etc/apt/sources.list.d/docker.list
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
+chmod a+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
+apt-get update
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin gh
+
+# 3. Guest user, once the docker group exists
+id -u {u} >/dev/null 2>&1 || useradd -m -s /bin/bash {u}
+usermod -aG sudo,users,docker {u}
+echo '{u} ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/90-asbx-{u}
+chmod 0440 /etc/sudoers.d/90-asbx-{u}
+
+# 4. Paseo daemon unit
+cat > /etc/systemd/system/{guest.PASEO_UNIT} <<'ASBX_UNIT'
+{render_paseo_unit(u)}ASBX_UNIT
+chmod 0644 /etc/systemd/system/{guest.PASEO_UNIT}
+
+# 5. Node LTS into /usr/local (never a shell-profile shim)
+curl -fsSLo /tmp/node.tar.xz {node_url}
+echo "{node_sha256}  /tmp/node.tar.xz" | sha256sum -c -
+rm -rf /usr/local/lib/nodejs
+mkdir -p /usr/local/lib/nodejs
+tar -xJf /tmp/node.tar.xz -C /usr/local/lib/nodejs
+mv /usr/local/lib/nodejs/node-* /usr/local/lib/nodejs/node
+rm -f /tmp/node.tar.xz
+ln -sf /usr/local/lib/nodejs/node/bin/node /usr/local/bin/node
+ln -sf /usr/local/lib/nodejs/node/bin/npm /usr/local/bin/npm
+ln -sf /usr/local/lib/nodejs/node/bin/npx /usr/local/bin/npx
+npm config set prefix /usr/local --location=global
+
+# 6. mise (per-project toolchains only)
+MISE_INSTALL_PATH=/usr/local/bin/mise sh -c "$(curl -fsSL https://mise.run)"
+echo 'eval "$(/usr/local/bin/mise activate bash)"' > /etc/profile.d/asbx-mise.sh
+
+# 7. AWS CLI v2 for the guest's architecture
+curl -fsSLo /tmp/awscliv2.zip "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip"
+unzip -q -o -d /tmp /tmp/awscliv2.zip
+/tmp/aws/install --update
+rm -rf /tmp/aws /tmp/awscliv2.zip
+
+# 8. Harness CLIs (as root, into /usr/local)
+npm i -g @openai/codex @google/gemini-cli @getpaseo/cli
+
+# 9. Per-user installers, as the guest user so their self-updates work:
+#    opencode (must not run as root), omp (~/.local/bin), Claude Code (~/.local/bin)
+{as_user} bash -c 'curl -fsSL https://opencode.ai/install | bash'
+ln -sf {home}/.opencode/bin/opencode /usr/local/bin/opencode
+{as_user} sh -c 'curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.sh | sh -s -- --binary'
+{as_user} bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+# Paseo: no server-side speech models; clients do dictation locally
+{as_user} paseo daemon config set features.dictation.enabled false
+
+# 10. fd-find is installed as fdfind on Debian
+ln -sf /usr/bin/fdfind /usr/local/bin/fd
+
+# 11. workspace + skill symlinks
+mkdir -p /workspace {home}/.asbx {home}/.agents/skills {home}/.claude {home}/.codex {home}/.config
+ln -sfn {home}/.agents/skills {home}/.claude/skills
+ln -sfn {home}/.agents/skills {home}/.codex/skills
+chown -R {u}:{u} /workspace {home}
+
+# 12. ssh: keys only. sshd takes the first value it reads, and Debian reads
+#     sshd_config.d first, so drop any drop-in that turns passwords on.
+for f in /etc/ssh/sshd_config.d/*.conf; do
+  [ -e "$f" ] || continue
+  if grep -qiE '^[[:space:]]*PasswordAuthentication[[:space:]]+yes' "$f"; then rm -f "$f"; fi
+done
+echo 'PasswordAuthentication no' > /etc/ssh/sshd_config.d/00-asbx.conf
+sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+systemctl daemon-reload
+systemctl enable ssh {guest.PASEO_UNIT}
 """
 
 
-BASE_BUILD_INSTANCE = "asbx-base-build"
+def is_elf(path) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == b"\x7fELF"
+    except OSError:
+        return False
 
 
-def copy_host_binaries(incus: Incus, instance: str, guest_user: str, binaries: list[str]) -> None:
-    """Copy host binaries into the guest user's ~/.local/bin, owned by that user."""
+def copy_host_binaries(g: Guest, guest_user: str, binaries: list[str]) -> None:
+    """Copy host binaries into the guest user's ~/.local/bin, owned by that
+    user. Only Linux (ELF) binaries can run in the guest; a macOS host's
+    Mach-O builds are skipped."""
     present = []
     for local_bin in binaries:
         local_path = config.expand(local_bin)
-        if local_path.exists():
-            present.append(local_path)
-        else:
+        if not local_path.exists():
             ui.warn(f"copy_binaries: {local_path} not found on host, skipping")
+        elif not is_elf(local_path):
+            ui.warn(f"copy_binaries: {local_path} is not a Linux (ELF) binary, skipping")
+        else:
+            present.append(local_path)
     if not present:
         return
 
     bin_dir = f"/home/{guest_user}/.local/bin"
-    uid = incus.uid_of(instance, guest_user)
-    incus.exec_in(instance, ["mkdir", "-p", bin_dir], user=guest_user)
+    uid = g.uid_of(guest_user)
+    g.exec(["mkdir", "-p", bin_dir], user=guest_user)
     for local_path in present:
         ui.ok(f"copying {local_path} -> {bin_dir}/{local_path.name}")
-        incus.file_push(instance, str(local_path), f"{bin_dir}/{local_path.name}",
-                        mode="0755", uid=uid, gid=uid)
+        g.push_file(str(local_path), f"{bin_dir}/{local_path.name}", mode="0755", uid=uid, gid=uid)
 
 
-def cmd_build_base(incus: Incus, cfg: dict) -> None:
+BASE_RECIPE_PATH = "/root/asbx-base.sh"
+
+
+def prepare_build_vm(g: Guest, cfg: dict, recipe: str) -> None:
+    """Everything `build-base` does inside the build VM on every backend:
+    runs `recipe` as root, copies the host binaries in, then cleans the VM
+    for imaging, so each sandbox gets its own host keys and machine id."""
+    g.push_text(BASE_RECIPE_PATH, recipe, mode="0700", uid=0, gid=0)
+    ui.ok("running the base recipe (installs docker, node, harness CLIs...)")
+    proc = g.exec(["bash", BASE_RECIPE_PATH], user="root", tty=True, check=False)
+    if proc.returncode != 0:
+        raise AsbxError(f"base recipe failed in {g.instance} (exit {proc.returncode})")
+    g.exec(["rm", "-f", BASE_RECIPE_PATH], user="root")
+
     guest_user = cfg["guest_user"]
-    if incus.instance_exists(BASE_BUILD_INSTANCE):
-        raise AsbxError(f"instance {BASE_BUILD_INSTANCE} already exists; delete it first: incus delete --force {BASE_BUILD_INSTANCE}")
+    copy_host_binaries(g, guest_user, cfg["defaults"]["copy_binaries"])
 
+    ui.ok("cleaning the VM for imaging")
+    g.exec(["cloud-init", "clean", "--logs", "--machine-id"], user="root")
+    g.exec(["bash", "-c", "rm -f /etc/ssh/ssh_host_*"], user="root")
+    g.exec(["truncate", "-s0", f"/home/{guest_user}/.bash_history"], user="root", check=False)
+    g.exec(["apt-get", "clean"], user="root")
+
+
+def cmd_build_base(backend: SandboxBackend, cfg: dict) -> None:
     node_url, node_sha256 = resolve_node_download()
-    cloud_init = render_base_cloud_init(guest_user, node_url, node_sha256)
-
-    ui.ok(f"launching {BASE_BUILD_INSTANCE} from {cfg['base_image_source']}")
-    resources = cfg["defaults"]["resources"]
-    incus.run(
-        "launch", cfg["base_image_source"], BASE_BUILD_INSTANCE, "--vm",
-        "-c", f"limits.cpu={resources['cpu']}",
-        "-c", f"limits.memory={resources['memory']}",
-        "-d", f"root,size={resources['disk']}",
-        "-c", f"cloud-init.user-data={cloud_init}",
-    )
-
-    ui.ok("waiting for cloud-init to finish (this installs docker, node, harness CLIs...)")
-    guest.wait_for_agent(incus, BASE_BUILD_INSTANCE, attempts=150, interval=2.0)
-    guest.wait_for_cloud_init(incus, BASE_BUILD_INSTANCE)
-
-    copy_host_binaries(incus, BASE_BUILD_INSTANCE, guest_user, cfg["defaults"]["copy_binaries"])
-
-    ui.ok("cleaning instance for imaging")
-    incus.exec_in(BASE_BUILD_INSTANCE, ["cloud-init", "clean", "--logs", "--machine-id"], user="root")
-    incus.exec_in(BASE_BUILD_INSTANCE, ["bash", "-c", "rm -f /etc/ssh/ssh_host_*"], user="root")
-    incus.exec_in(BASE_BUILD_INSTANCE, ["truncate", "-s0", f"/home/{guest_user}/.bash_history"], user="root", check=False)
-    incus.exec_in(BASE_BUILD_INSTANCE, ["apt-get", "clean"], user="root")
-
-    ui.ok(f"stopping and publishing {BASE_BUILD_INSTANCE}")
-    incus.run("stop", BASE_BUILD_INSTANCE)
-    date_alias = f"{cfg['image_alias']}-{datetime.now(timezone.utc):%Y%m%d}"
-    incus.image_alias_delete(date_alias)
-    incus.run("publish", BASE_BUILD_INSTANCE, "--alias", date_alias, "--force")
-
-    fingerprint = incus.image_alias_exists(date_alias)
-    if not fingerprint:
-        raise AsbxError(f"publish succeeded but alias {date_alias} not found")
-
-    incus.image_alias_delete(cfg["image_alias"])
-    incus.image_alias_create(cfg["image_alias"], fingerprint)
-    incus.run("delete", BASE_BUILD_INSTANCE, "--force")
-    ui.ok(f"base image ready: {cfg['image_alias']} -> {date_alias} ({fingerprint[:12]})")
+    recipe = render_base_script(cfg["guest_user"], node_url, node_sha256)
+    backend.build_base(cfg, lambda g: prepare_build_vm(g, cfg, recipe))

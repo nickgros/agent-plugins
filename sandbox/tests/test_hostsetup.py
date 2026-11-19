@@ -16,8 +16,9 @@ import stat
 import pytest
 import yaml
 
-from asbxlib import config, host, ingress
+from asbxlib import config, host, incusbackend, ingress
 from asbxlib.errors import AsbxError
+from asbxlib.incusbackend import IncusBackend
 from fake_incus import FakeIncus
 
 
@@ -33,19 +34,22 @@ def test_cmd_init_writes_a_private_config_and_does_not_overwrite_it(home, monkey
     # point every path the default config uses at tmp
     monkeypatch.setitem(config.DEFAULT_CONFIG["ssh"], "key", str(home / "key"))
     monkeypatch.setitem(config.DEFAULT_CONFIG["ssh"], "config_dir", str(home / "confd"))
-    monkeypatch.setattr(hostsetup.netacl, "ensure_acl", lambda incus, cfg: None)
+    acls: list = []
+    monkeypatch.setattr(incusbackend.netacl, "ensure_acl", lambda incus, cfg: acls.append(cfg["network"]["acl"]))
     monkeypatch.setattr(hostsetup.sshconf, "ensure_ssh_include", lambda cfg: None)
     # The ingress firewall is opt-in: init must never install it.
     monkeypatch.setattr(ingress, "install", lambda *a, **k: pytest.fail("init installed the firewall"))
 
-    hostsetup.cmd_init(FakeIncus())
+    hostsetup.cmd_init(IncusBackend(FakeIncus()))
+
+    assert acls == ["asbx-egress"]   # the backend readied its host-side state
 
     path = config.config_path()
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert yaml.safe_load(path.read_text())["guest_user"] == config.DEFAULT_CONFIG["guest_user"]
 
     path.write_text("guest_user: kept\n")
-    hostsetup.cmd_init(FakeIncus())
+    hostsetup.cmd_init(IncusBackend(FakeIncus()))
     assert path.read_text() == "guest_user: kept\n"
 
 

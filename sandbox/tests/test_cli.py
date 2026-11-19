@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import os
+import socket
+import threading
+
 import pytest
 
-from asbxlib import cli
+from asbxlib import cli, host
+from asbxlib.errors import AsbxError
+from asbxlib.incusbackend import IncusBackend
+from asbxlib.tartbackend import TartBackend
+
+from fake_tart import FakeTart
 
 
 def test_main_list_with_no_config_returns_1_and_reports_no_config(config_root, capsys):
@@ -29,9 +38,103 @@ def test_ssh_config_takes_exactly_one_of_jump_or_direct(capsys):
 
 
 def test_settings_sync_unknown_group_reports_missing_manifest(config_root, capsys):
-    (config_root.parent / "config.yaml").write_text("")
+    (config_root.parent / "config.yaml").write_text("backend: incus\n")
 
     rc = cli.main(["settings-sync", "nope"])
 
     assert rc == 1
     assert "no manifest at" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# make_backend
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("platform, cfg, expected", [
+    ("linux", None, IncusBackend),
+    ("darwin", None, TartBackend),
+    ("linux", {"backend": "auto"}, IncusBackend),
+    ("darwin", {"backend": "auto"}, TartBackend),
+    ("darwin", {"backend": "incus"}, IncusBackend),
+    ("linux", {"backend": "tart"}, TartBackend),
+])
+def test_make_backend_resolves_auto_by_platform_and_honours_an_explicit_choice(
+        monkeypatch, platform, cfg, expected):
+    monkeypatch.setattr(cli.sys, "platform", platform)
+
+    assert isinstance(cli.make_backend(cfg), expected)
+
+
+def test_make_backend_auto_refuses_an_unsupported_platform(monkeypatch):
+    monkeypatch.setattr(cli.sys, "platform", "freebsd14")
+
+    with pytest.raises(AsbxError, match="freebsd14"):
+        cli.make_backend({"backend": "auto"})
+
+
+# ---------------------------------------------------------------------------
+# Incus-only commands
+# ---------------------------------------------------------------------------
+
+def test_ingress_commands_are_refused_on_the_tart_backend(config_root, monkeypatch, capsys):
+    (config_root.parent / "config.yaml").write_text("backend: tart\n")
+    monkeypatch.setattr(cli, "make_backend", lambda cfg: TartBackend(FakeTart().tart()))
+
+    assert cli.main(["client-config", "laptop"]) == 1
+    assert "'asbx client-config' is not supported on the tart backend" in capsys.readouterr().err
+    assert cli.main(["ingress", "setup", "--print"]) == 1
+    assert "'asbx ingress setup' is not supported on the tart backend" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# ssh-proxy
+# ---------------------------------------------------------------------------
+
+def test_ssh_proxy_refuses_a_sandbox_with_no_address(config_root, monkeypatch, capsys):
+    (config_root.parent / "config.yaml").write_text("backend: tart\n")
+    fake = FakeTart()
+    fake.stub("ip", "sandbox-x", rc=1)
+    monkeypatch.setattr(cli, "make_backend", lambda cfg: TartBackend(fake.tart()))
+
+    assert cli.main(["ssh-proxy", "sandbox-x"]) == 1
+    assert "sandbox-x has no address yet" in capsys.readouterr().err
+    assert fake.calls == [["ip", "sandbox-x", "--resolver", "dhcp"]]
+
+
+def test_relay_tcp_copies_both_ways_and_passes_on_the_half_close():
+    server = socket.create_server(("127.0.0.1", 0))
+    port = server.getsockname()[1]
+    received = []
+
+    def echo_once():
+        conn, _ = server.accept()
+        with conn:
+            data = b""
+            while chunk := conn.recv(65536):   # ends only when the relay shuts down its write side
+                data += chunk
+            received.append(data)
+            conn.sendall(data[::-1])
+
+    thread = threading.Thread(target=echo_once, daemon=True)
+    thread.start()
+    in_r, in_w = os.pipe()
+    out_r, out_w = os.pipe()
+    os.write(in_w, b"ping")
+    os.close(in_w)
+
+    host.relay_tcp("127.0.0.1", port, stdin_fd=in_r, stdout_fd=out_w)
+
+    os.close(out_w)
+    with os.fdopen(out_r, "rb") as out:
+        assert out.read() == b"gnip"
+    thread.join(timeout=5)
+    assert received == [b"ping"]
+    os.close(in_r)
+    server.close()
+
+
+def test_relay_tcp_reports_an_unreachable_port():
+    with socket.create_server(("127.0.0.1", 0)) as s:
+        port = s.getsockname()[1]
+    with pytest.raises(AsbxError, match=f"cannot connect to 127.0.0.1:{port}"):
+        host.relay_tcp("127.0.0.1", port)

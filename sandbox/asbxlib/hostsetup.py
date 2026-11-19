@@ -5,18 +5,17 @@ from pathlib import Path
 
 import yaml
 
+from .backend import SandboxBackend
 from .errors import AsbxError
-from .incus import Incus
 from . import config
 from . import host
-from . import netacl
 from . import sshconf
 from . import ui
 
 ENTRY_POINT = Path(__file__).resolve().parents[1] / "asbx"
 
 
-def cmd_init(incus: Incus) -> None:
+def cmd_init(backend: SandboxBackend) -> None:
     if config.config_path().exists():
         print(str(config.config_path()))
         return
@@ -36,10 +35,12 @@ def cmd_init(incus: Incus) -> None:
         host.generate_ssh_key(ssh_key)
         ui.ok(f"generated {ssh_key}")
 
+    # Readies what the backend keeps on the host (Incus: the egress ACL). A
+    # host that isn't ready yet still gets its config; `doctor` says what's missing.
     try:
-        netacl.ensure_acl(incus, cfg)
+        backend.preflight(cfg)
     except AsbxError as e:
-        ui.warn(f"could not create network ACL yet: {e}")
+        ui.warn(f"{backend.name} backend not ready yet: {e}; run 'asbx doctor'")
 
     sshconf.ensure_ssh_include(cfg)
 

@@ -3,112 +3,78 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from . import auth, config, guest, harnesssync, ingress, manifest, netacl, provision, sshconf, ui
+from . import auth, config, guest, harnesssync, manifest, provision, sshconf, ui
+from .backend import (ABSENT, META_BASE_IMAGE, META_GROUP, META_MANIFEST_SHA256, RUNNING,
+                      SandboxBackend, SandboxSpec)
 from .errors import AsbxError
-from .incus import Incus
 
 
-def cmd_up(incus: Incus, cfg: dict, group: str, no_auth: bool, no_provision: bool,
+def spec_for(m: manifest.Manifest, ipv4: Optional[str] = None) -> SandboxSpec:
+    resources = m.resources
+    return SandboxSpec(instance=m.instance, group=m.name, cpu=resources["cpu"],
+                       memory=resources["memory"], disk=resources["disk"],
+                       mounts=list(m.mounts), ipv4=ipv4)
+
+
+def run_provision(backend: SandboxBackend, m: manifest.Manifest, cfg: dict) -> None:
+    provision.run_provision(backend.guest(m.instance), m, cfg["guest_user"])
+    backend.meta_set(m.instance, META_MANIFEST_SHA256, manifest.manifest_sha256(m.path))
+
+
+def cmd_up(backend: SandboxBackend, cfg: dict, group: str, no_auth: bool, no_provision: bool,
            ipv4: Optional[str] = None) -> None:
     """`ipv4` is the address to pin on a newly created sandbox (rebuild's previous one)."""
     manifest_obj = manifest.load_manifest(group, cfg)
     instance = manifest_obj.instance
+    spec = spec_for(manifest_obj, ipv4)
 
-    # ADR 0005: once the ingress firewall is opted in, no sandbox runs without it.
-    ingress.require_firewall(cfg)
+    backend.preflight(cfg)
 
-    try:
-        netacl.ensure_acl(incus, cfg)
-    except AsbxError as e:
-        ui.warn(f"could not refresh network ACL: {e}")
-
-    if not incus.image_alias_exists(cfg["image_alias"]):
-        raise AsbxError(f"image alias {cfg['image_alias']} not found; run 'asbx build-base' first")
-
-    created = not incus.instance_exists(instance)
-    if created:
+    state = backend.state(instance)
+    if state == ABSENT:
+        base = backend.base_image(cfg)
+        if not base:
+            raise AsbxError(f"no base image ({cfg['image_alias']}); run 'asbx build-base' first")
         ssh_pub_path = Path(str(config.expand(cfg["ssh"]["key"])) + ".pub")
         if not ssh_pub_path.exists():
             raise AsbxError(f"ssh public key not found at {ssh_pub_path}; run 'asbx init' first")
-        cloud_init = guest.render_instance_cloud_init(instance, cfg["guest_user"], ssh_pub_path.read_text().strip())
-        resources = manifest_obj.resources
-        ui.ok(f"creating {instance}")
-        incus.run(
-            "create", cfg["image_alias"], instance, "--vm",
-            "-c", f"limits.cpu={resources['cpu']}",
-            "-c", f"limits.memory={resources['memory']}",
-            "-d", f"root,size={resources['disk']}",
-            "-c", f"cloud-init.user-data={cloud_init}",
-        )
-        incus.config_set(instance, "user.asbx.group", group)
-        fingerprint = incus.image_alias_exists(cfg["image_alias"])
-        incus.config_set(instance, "user.asbx.base_image", fingerprint or "")
-        incus.config_set(instance, "user.asbx.manifest_sha256", manifest.manifest_sha256(manifest_obj.path))
-        if ipv4:
-            # Before the first start, so the guest's first lease is already this address.
-            netacl.pin_nic(incus, instance, cfg, address=ipv4)
+        backend.create(cfg, spec)
+        backend.meta_set(instance, META_GROUP, group)
+        backend.meta_set(instance, META_BASE_IMAGE, base)
+        backend.meta_set(instance, META_MANIFEST_SHA256, manifest.manifest_sha256(manifest_obj.path))
 
-        incus.run("start", instance)
+    # Applied on every `up`, not just at creation: adding a mount to a
+    # manifest has to reach an existing sandbox for `up` to be idempotent.
+    if backend.apply(cfg, spec) and state == RUNNING:
+        ui.ok(f"restarting {instance} to apply its new configuration")
+        backend.restart(cfg, spec)
+    backend.start(cfg, spec)
 
-        ui.ok(f"waiting for {instance} agent")
-        guest.wait_for_agent(incus, instance)
-        guest.wait_for_cloud_init(incus, instance)
-        netacl.apply_nic_acl(incus, instance, cfg)
-    else:
-        state = incus.instance_state(instance)
-        if state != "Running":
-            ui.ok(f"starting {instance}")
-            incus.run("start", instance)
-
-        ui.ok(f"waiting for {instance} agent")
-        guest.wait_for_agent(incus, instance)
-        guest.wait_for_cloud_init(incus, instance)
-
-        # A first `up` that died between create and apply_nic_acl leaves an
-        # unfiltered instance; the ACL is (re)applied here rather than assumed.
-        egress_mode = incus.config_get(instance, "user.asbx.egress_mode")
-        if egress_mode == "guest-nft":
-            raise AsbxError(
-                f"{instance} was built with the removed in-guest firewall fallback, "
-                f"which the agent can disable; run 'asbx rebuild {group}'"
-            )
-        if egress_mode != "acl":
-            netacl.apply_nic_acl(incus, instance, cfg)
-
-    pinned = netacl.pin_nic(incus, instance, cfg)
-    ui.ok(f"{instance}: eth0 pinned to {pinned} with IP/MAC filtering")
-
-    # Mounts are synced on every `up`, not just at creation: adding a mount to
-    # a manifest has to reach an existing sandbox for `up` to be idempotent.
-    if guest.sync_mounts(incus, instance, manifest_obj.mounts):
-        ui.ok(f"restarting {instance} to attach mounts")
-        incus.run("restart", instance)
-        guest.wait_for_agent(incus, instance)
-        guest.wait_for_cloud_init(incus, instance)
-
-    guest.sync_authorized_keys(incus, instance, cfg)
+    g = backend.guest(instance)
+    guest.set_hostname(g)
+    guest.sync_authorized_keys(g, cfg)
 
     ui.ok(f"{instance}: ssh config")
-    sshconf.write_ssh_config(instance, cfg)
+    sshconf.write_ssh_config(cfg, instance, backend.ssh_route(cfg, instance))
 
-    guest.write_guest_env(incus, instance, cfg, manifest_obj.env)
-    guest.write_git_identity(incus, instance, cfg)
+    guest.write_guest_env(g, cfg, manifest_obj.env)
+    guest.write_git_identity(g, cfg)
     try:
-        harnesssync.sync_instance(incus, cfg, manifest_obj)
+        harnesssync.sync_instance(g, cfg, manifest_obj)
     except AsbxError as e:
         # Settings are a convenience; a bad host file must not block auth and provisioning.
         ui.warn(f"{instance}: harness settings not synced: {e}")
 
     try:
-        guest.configure_shell(incus, instance, cfg)
+        guest.configure_shell(g, cfg)
     except AsbxError as e:
         ui.warn(f"{instance}: shell not configured: {e}")
 
-    guest.start_paseo(incus, instance)
+    guest.start_paseo(g)
 
     if not no_auth:
-        auth.run_auth(incus, manifest_obj, cfg)
+        auth.run_auth(g, manifest_obj, cfg)
     if not no_provision:
-        provision.run_provision(incus, instance, manifest_obj, cfg["guest_user"])
+        run_provision(backend, manifest_obj, cfg)
 
     print(f"ssh {instance}  # or: code --remote ssh-remote+{instance} /workspace")

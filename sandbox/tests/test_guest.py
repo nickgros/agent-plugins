@@ -6,12 +6,14 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 
 import pytest
 
 from asbxlib import guest
 from asbxlib.errors import AsbxError
 from asbxlib.manifest import Mount
+from asbxlib.incusbackend import IncusGuest
 from fake_incus import FakeIncus
 
 
@@ -45,7 +47,7 @@ def test_mount_readable_error_reports_a_missing_path(tmp_path):
 
 
 def test_mount_readable_error_ignores_unreadable_ancestors(tmp_path):
-    """virtiofs is served by the Incus daemon as host root, so a private
+    """virtiofs is served by the VM service as host root, so a private
     parent directory never blocks the guest."""
     parent = tmp_path / "private"
     parent.mkdir()
@@ -57,17 +59,6 @@ def test_mount_readable_error_ignores_unreadable_ancestors(tmp_path):
         assert guest.mount_readable_error(target) is None
     finally:
         os.chmod(parent, 0o755)
-
-
-# ---------------------------------------------------------------------------
-# render_instance_cloud_init
-# ---------------------------------------------------------------------------
-
-def test_render_instance_cloud_init_has_pubkey_for_guest_user():
-    rendered = guest.render_instance_cloud_init("sandbox-demo", "dev", "ssh-ed25519 AAAAtest")
-    assert "hostname: sandbox-demo" in rendered
-    assert "- name: dev" in rendered
-    assert "ssh-ed25519 AAAAtest" in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -90,76 +81,6 @@ def test_render_env_file_empty_env_renders_nothing():
 
 
 # ---------------------------------------------------------------------------
-# sync_mounts
-# ---------------------------------------------------------------------------
-
-def test_sync_mounts_no_change_when_devices_already_match(tmp_path):
-    os.chmod(str(tmp_path), 0o755)
-    mounts = [Mount(host=str(tmp_path), guest="/home/agent/x", mode="ro")]
-    fake = FakeIncus()
-    fake.set_devices({
-        "mnt-0": {
-            "type": "disk",
-            "source": str(tmp_path),
-            "path": "/home/agent/x",
-            "readonly": "true",
-        }
-    })
-    assert guest.sync_mounts(fake, "sandbox-demo", mounts) is False
-    assert not any(c[:3] == ["config", "device", "add"] for c in fake.calls)
-
-
-def test_sync_mounts_returns_true_and_readds_when_source_path_differs(tmp_path):
-    os.chmod(str(tmp_path), 0o755)
-    mounts = [Mount(host=str(tmp_path), guest="/home/agent/x", mode="ro")]
-    fake = FakeIncus()
-    fake.set_devices({
-        "mnt-0": {
-            "type": "disk",
-            "source": "/somewhere/else",
-            "path": "/home/agent/x",
-            "readonly": "true",
-        }
-    })
-    assert guest.sync_mounts(fake, "sandbox-demo", mounts) is True
-    assert any(
-        c[:6] == ["config", "device", "add", "sandbox-demo", "mnt-0", "disk"]
-        for c in fake.calls
-    )
-
-
-def test_sync_mounts_raises_asbxerror_naming_the_mount_when_incus_refuses_the_device(tmp_path):
-    os.chmod(str(tmp_path), 0o755)
-    mounts = [Mount(host=str(tmp_path), guest="/home/agent/x", mode="ro")]
-    fake = FakeIncus()
-    fake.set_devices({
-        "mnt-0": {
-            "type": "disk",
-            "source": "/somewhere/else",
-            "path": "/home/agent/x",
-            "readonly": "true",
-        }
-    })
-    fake.stub("device", "add", "disk", rc=1, stderr="no space")
-    with pytest.raises(AsbxError, match=re.escape("/home/agent/x")):
-        guest.sync_mounts(fake, "sandbox-demo", mounts)
-
-
-# ---------------------------------------------------------------------------
-# wait_for_agent
-# ---------------------------------------------------------------------------
-
-def test_wait_for_agent_raises_after_attempts_exhausted_with_last_stderr(monkeypatch):
-    fake = FakeIncus()
-    fake.stub("exec", "true", rc=1, stderr="agent not ready")
-    monkeypatch.setattr(guest.time, "sleep", lambda s: None)
-    with pytest.raises(AsbxError, match="agent not ready"):
-        guest.wait_for_agent(fake, "sandbox-demo", attempts=3, interval=0)
-    tries = [c for c in fake.calls if "true" in " ".join(c)]
-    assert len(tries) == 3
-
-
-# ---------------------------------------------------------------------------
 # write_guest_env
 # ---------------------------------------------------------------------------
 
@@ -172,7 +93,7 @@ def test_write_guest_env_pushes_profile_script_and_claude_settings_with_manifest
     manifest_env = {"SHARED": "manifest-wins"}
     fake = FakeIncus()
 
-    guest.write_guest_env(fake, "sandbox-demo", cfg, manifest_env)
+    guest.write_guest_env(IncusGuest(fake, "sandbox-demo"), cfg, manifest_env)
 
     assert "/etc/profile.d/asbx-env.sh" in fake.pushed
     profile_body = fake.pushed["/etc/profile.d/asbx-env.sh"]
@@ -192,7 +113,7 @@ def test_write_guest_env_pushes_profile_script_and_claude_settings_with_manifest
 # render_workspace_cd — only interactive ssh logins move to /workspace
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(shutil.which("script") is None, reason="needs util-linux script(1) for a tty")
+@pytest.mark.skipif(shutil.which("script") is None, reason="needs script(1) for a tty")
 @pytest.mark.parametrize("ssh, tty, start_in_home, has_workspace, lands_in_workspace", [
     (True, True, True, True, True),
     (True, False, True, True, False),    # `ssh host cmd`, scp, VSCode's bootstrap
@@ -213,10 +134,16 @@ def test_workspace_cd_moves_only_interactive_ssh_logins_from_home(
         env["SSH_CONNECTION"] = "10.0.0.2 5000 10.0.0.3 22"
     start = home if start_in_home else tmp_path
     inner = f'cd {start} && PWD={start} && . {script} && pwd'
-    argv = ["script", "-qec", f"sh -c '{inner}'", "/dev/null"] if tty else ["sh", "-c", inner]
+    if not tty:
+        argv = ["sh", "-c", inner]
+    elif sys.platform == "darwin":   # BSD script(1): file first, then the command
+        argv = ["script", "-q", "/dev/null", "sh", "-c", inner]
+    else:                             # util-linux script(1)
+        argv = ["script", "-qec", f"sh -c '{inner}'", "/dev/null"]
 
     out = subprocess.run(argv, env=env, stdin=None if tty else subprocess.DEVNULL,
                          capture_output=True, text=True, check=True).stdout
+    out = re.sub(r"\^D\x08+", "", out)   # BSD script(1) echoes the EOF it reads from stdin
 
     assert out.strip().splitlines()[-1] == str(workspace if lands_in_workspace else start)
 
@@ -254,7 +181,7 @@ def test_sync_authorized_keys_writes_owner_only_file_in_the_guest_users_ssh_dir(
     cfg["ssh"]["extra_pubkeys"] = [KEY_B]
     fake = FakeIncus()
 
-    guest.sync_authorized_keys(fake, "sandbox-demo", cfg)
+    guest.sync_authorized_keys(IncusGuest(fake, "sandbox-demo"), cfg)
 
     assert ["exec", "sandbox-demo", "--", "install", "-d", "-m", "0700",
             "-o", "1000", "-g", "1000", "/home/agent/.ssh"] in fake.calls
@@ -269,25 +196,25 @@ def test_sync_authorized_keys_names_the_missing_public_key(cfg, tmp_path):
     cfg["ssh"]["key"] = str(tmp_path / "absent")
 
     with pytest.raises(AsbxError, match="asbx init"):
-        guest.sync_authorized_keys(FakeIncus(), "sandbox-demo", cfg)
+        guest.sync_authorized_keys(IncusGuest(FakeIncus(), "sandbox-demo"), cfg)
 
 
 def test_render_mise_config_is_valid_toml_with_quoted_tool_names():
-    import tomllib
+    tomllib = pytest.importorskip("tomllib")
     parsed = tomllib.loads(guest.render_mise_config({"java": "21", "aqua:apache/maven": "3.9"}))
     assert parsed["settings"]["trusted_config_paths"] == ["/workspace"]
     assert parsed["tools"] == {"java": "21", "aqua:apache/maven": "3.9"}
 
 
 def test_render_mise_config_without_tools_has_no_tools_table():
-    import tomllib
+    tomllib = pytest.importorskip("tomllib")
     assert "tools" not in tomllib.loads(guest.render_mise_config({}))
 
 
 def test_write_mise_config_creates_system_dir_and_pushes_root_owned_file():
     fake = FakeIncus()
 
-    guest.write_mise_config(fake, "sandbox-demo", {"maven": "3.9"})
+    guest.write_mise_config(IncusGuest(fake, "sandbox-demo"), {"maven": "3.9"})
 
     assert any(c[-3:] == ["mkdir", "-p", "/etc/mise"] for c in fake.calls)
     push = next(c for c in fake.calls if c[:2] == ["file", "push"])
@@ -299,9 +226,28 @@ def test_start_paseo_warns_instead_of_failing_on_an_image_without_the_unit(capsy
     fake = FakeIncus()
     fake.stub("systemctl", "start", "asbx-paseo.service", rc=5, stderr="Unit asbx-paseo.service not found.")
 
-    guest.start_paseo(fake, "sandbox-demo")
+    guest.start_paseo(IncusGuest(fake, "sandbox-demo"))
 
     assert "Unit asbx-paseo.service not found." in capsys.readouterr().err
+
+
+def test_set_hostname_names_the_guest_after_its_sandbox():
+    fake = FakeIncus()
+
+    guest.set_hostname(IncusGuest(fake, "sandbox-demo"))
+
+    assert ["exec", "sandbox-demo", "--", "hostnamectl", "set-hostname", "sandbox-demo"] in fake.calls
+
+
+def test_wait_for_cloud_init_waits_then_surfaces_an_image_failure():
+    fake = FakeIncus()
+    fake.stub("cloud-init", "status", "--long", stdout="status: error\ndetail: boom\n")
+    fake.stub("cloud-init", "status", stdout="status: error\n")
+
+    with pytest.raises(AsbxError, match="cloud-init failed in sandbox-demo:\nstatus: error\ndetail: boom"):
+        guest.wait_for_cloud_init(IncusGuest(fake, "sandbox-demo"))
+
+    assert fake.calls[0] == ["exec", "sandbox-demo", "--", "cloud-init", "status", "--wait"]
 
 
 def test_render_etc_environment_puts_shims_before_local_bin_before_system_dirs():
@@ -325,7 +271,7 @@ def test_configure_shell_zsh_installs_when_missing_and_sets_login_shell():
     fake = FakeIncus()
     fake.stub("test", "-x", "/usr/bin/zsh", rc=1)
 
-    guest.configure_shell(fake, "sandbox-demo", _shell_cfg("zsh"))
+    guest.configure_shell(IncusGuest(fake, "sandbox-demo"), _shell_cfg("zsh"))
 
     install = next(i for i, c in enumerate(fake.calls) if "apt-get install -y -q zsh" in c[-1])
     assert install < fake.calls.index(USERMOD_ZSH)
@@ -336,7 +282,7 @@ def test_configure_shell_zsh_installs_when_missing_and_sets_login_shell():
 def test_configure_shell_zsh_present_skips_install():
     fake = FakeIncus()
 
-    guest.configure_shell(fake, "sandbox-demo", _shell_cfg("zsh"))
+    guest.configure_shell(IncusGuest(fake, "sandbox-demo"), _shell_cfg("zsh"))
 
     assert not any("apt-get" in " ".join(c) for c in fake.calls)
     assert USERMOD_ZSH in fake.calls
@@ -348,13 +294,13 @@ def test_configure_shell_zsh_install_failure_raises():
     fake.stub("apt-get", rc=100)
 
     with pytest.raises(AsbxError, match="installing zsh"):
-        guest.configure_shell(fake, "sandbox-demo", _shell_cfg("zsh"))
+        guest.configure_shell(IncusGuest(fake, "sandbox-demo"), _shell_cfg("zsh"))
 
 
 def test_configure_shell_bash_only_sets_login_shell():
     fake = FakeIncus()
 
-    guest.configure_shell(fake, "sandbox-demo", _shell_cfg("bash"))
+    guest.configure_shell(IncusGuest(fake, "sandbox-demo"), _shell_cfg("bash"))
 
     assert ["exec", "sandbox-demo", "--", "usermod", "-s", "/bin/bash", "agent"] in fake.calls
     assert "/etc/zsh/zprofile" not in fake.pushed
@@ -363,7 +309,7 @@ def test_configure_shell_bash_only_sets_login_shell():
 def test_configure_shell_zsh_creates_an_empty_zshrc_only_when_absent():
     fake = FakeIncus()
 
-    guest.configure_shell(fake, "sandbox-demo", _shell_cfg("zsh"))
+    guest.configure_shell(IncusGuest(fake, "sandbox-demo"), _shell_cfg("zsh"))
 
     assert any("test -e ~/.zshrc || : > ~/.zshrc" in c[-1] for c in fake.calls)
 
@@ -374,6 +320,6 @@ def test_configure_shell_zsh_install_failure_leaves_login_shell_alone():
     fake.stub("apt-get", rc=100)
 
     with pytest.raises(AsbxError):
-        guest.configure_shell(fake, "sandbox-demo", _shell_cfg("zsh"))
+        guest.configure_shell(IncusGuest(fake, "sandbox-demo"), _shell_cfg("zsh"))
 
     assert not any("usermod" in c for c in fake.calls)

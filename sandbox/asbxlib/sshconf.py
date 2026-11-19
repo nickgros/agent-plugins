@@ -1,23 +1,28 @@
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from typing import Optional
 
+from .backend import ABSENT, SandboxBackend, SshRoute
 from .errors import AsbxError
-from .incus import Incus
 from . import config
 from . import host
 from . import manifest as manifest_mod
-from . import netacl
 from . import ui
 
 
-def render_ssh_config_block(instance: str, hostname: str, ssh_key: str, known_hosts: str,
+def render_ssh_config_block(instance: str, route: SshRoute, ssh_key: str, known_hosts: str,
                             guest_user: str) -> str:
+    """The host's stanza. `HostKeyAlias` keeps the known-hosts entry stable
+    when the route is a ProxyCommand or the address changes."""
+    reach = (f"    HostName {route.hostname}\n" if route.hostname
+             else f"    ProxyCommand {route.proxy_command}\n")
     return (
         f"# managed by asbx — do not edit\n"
         f"Host {instance}\n"
-        f"    HostName {hostname}\n"
+        + reach
+        + f"    HostKeyAlias {route.host_key_alias}\n"
         f"    User {guest_user}\n"
         f"    IdentityFile {ssh_key}\n"
         f"    IdentitiesOnly yes\n"
@@ -26,17 +31,26 @@ def render_ssh_config_block(instance: str, hostname: str, ssh_key: str, known_ho
     )
 
 
-def render_remote_stanza(instance: str, hostname: str, guest_user: str, jump: Optional[str],
+def render_remote_stanza(instance: str, route: SshRoute, guest_user: str, jump: Optional[str],
                          identity: str) -> str:
-    """Host block for a machine that is not the Incus host. A literal alias, not
+    """Host block for a machine that is not the sandbox host. A literal alias, not
     a `sandbox-*` wildcard: VSCode's host list shows only literal Host names, and
-    adds its own bare-name entry on connect when it finds none. With no `jump`,
-    `hostname` is the sandbox's pinned IP, reached over an ingress interface."""
+    adds its own bare-name entry on connect when it finds none. Through `jump`,
+    a `hostname` route is a ProxyJump, and a `proxy_command` route runs its
+    command on the jump host over ssh. With no `jump`, `route.hostname` is the
+    sandbox's pinned IP, reached over an ingress interface."""
+    if route.hostname:
+        reach = (f"    HostName {route.hostname}\n"
+                 f"    User {guest_user}\n"
+                 + (f"    ProxyJump {jump}\n" if jump else ""))
+    else:
+        # Quoted once for the local shell that runs ProxyCommand, so the jump
+        # host's shell gets the route's own quoting intact.
+        reach = (f"    ProxyCommand ssh {shlex.quote(jump)} {shlex.quote(route.proxy_command)}\n"
+                 f"    User {guest_user}\n")
     return (
         f"Host {instance}\n"
-        f"    HostName {hostname}\n"
-        f"    User {guest_user}\n"
-        + (f"    ProxyJump {jump}\n" if jump else "")
+        + reach
         + f"    IdentityFile {identity}\n"
         f"    IdentitiesOnly yes\n"
         f"    StrictHostKeyChecking no\n"
@@ -45,17 +59,20 @@ def render_remote_stanza(instance: str, hostname: str, guest_user: str, jump: Op
     )
 
 
-def cmd_ssh_config(incus: Incus, cfg: dict, group: str, jump: Optional[str], identity: str) -> None:
-    """`jump` None means --direct: the pinned IPv4 comes from Incus config, never the guest."""
+def cmd_ssh_config(backend: SandboxBackend, cfg: dict, group: str, jump: Optional[str],
+                   identity: str) -> None:
+    """`jump` None means --direct: the pinned IPv4 comes from host-side backend
+    config, never the guest."""
     instance = manifest_mod.load_manifest(group, cfg).instance
     if jump:
-        hostname = instance_hostname(instance, cfg)
+        route = backend.ssh_route(cfg, instance)
     else:
-        pinned = netacl.pinned_ipv4(incus, instance) if incus.instance_exists(instance) else None
+        pinned = backend.pinned_ipv4(instance) if backend.state(instance) != ABSENT else None
         if not pinned:
-            raise AsbxError(f"{instance} has no pinned IPv4 yet; run 'asbx up {group}' first")
-        hostname = pinned
-    print(render_remote_stanza(instance, hostname, cfg["guest_user"], jump, identity), end="")
+            raise AsbxError(f"{instance} has no pinned IPv4; --direct needs a backend that pins "
+                            f"sandbox addresses (Incus) and 'asbx up {group}' to have run")
+        route = SshRoute(host_key_alias=instance, hostname=pinned)
+    print(render_remote_stanza(instance, route, cfg["guest_user"], jump, identity), end="")
 
 
 def config_file(cfg: dict, instance: str) -> Path:
@@ -68,27 +85,19 @@ def remove_ssh_config(cfg: dict, instance: str) -> None:
         path.unlink()
 
 
-def instance_hostname(instance: str, cfg: dict) -> str:
-    """The name the host's resolver gives the instance: its Incus name under
-    the bridge's DNS domain. Derived from config, never read back from the
-    guest, so nothing the agent controls reaches the generated SSH config."""
-    return f"{instance}.{cfg['network']['dns_domain']}"
-
-
-def write_ssh_config(instance: str, cfg: dict) -> str:
-    hostname = instance_hostname(instance, cfg)
-
+def write_ssh_config(cfg: dict, instance: str, route: SshRoute) -> None:
+    """Built from `route` alone, which backends derive from host-side data,
+    so nothing the guest reports reaches the host's ssh config (ADR 0004)."""
     known_hosts = config.expand(cfg["ssh"]["known_hosts"])
-    host.forget_host_key(known_hosts, hostname)
+    host.forget_host_key(known_hosts, route.host_key_alias)
 
     conf_path = config_file(cfg, instance)
     conf_path.parent.mkdir(parents=True, exist_ok=True)
     ssh_key = config.expand(cfg["ssh"]["key"])
-    block = render_ssh_config_block(instance, hostname, str(ssh_key), str(known_hosts),
+    block = render_ssh_config_block(instance, route, str(ssh_key), str(known_hosts),
                                     cfg["guest_user"])
     conf_path.write_text(block)
     ui.ok(f"wrote {conf_path}")
-    return hostname
 
 
 def include_line(cfg: dict) -> str:

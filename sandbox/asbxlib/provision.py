@@ -4,9 +4,9 @@ import os
 from typing import Optional
 
 from . import guest, ui
+from .backend import Guest
 from .errors import AsbxError
-from .incus import Incus
-from .manifest import GUIDE_NAME, WORKTREES_NAME, Manifest, Repo, manifest_sha256, resolve_remote_url
+from .manifest import GUIDE_NAME, WORKTREES_NAME, Manifest, Repo, resolve_remote_url
 
 WORKSPACE = "/workspace"
 WORKTREES_DIR = f"{WORKSPACE}/{WORKTREES_NAME}"
@@ -86,14 +86,14 @@ def render_workspace_guide(manifest: Manifest, base_branches: dict[str, str], no
 UNKNOWN_BRANCH = "<default branch>"
 
 
-def _base_branch(incus: Incus, instance: str, guest_user: str, workdir: str, repo: Repo) -> str:
+def _base_branch(g: Guest, guest_user: str, workdir: str, repo: Repo) -> str:
     """The branch worktrees start from: the manifest `ref`, else the branch the
     clone's origin/HEAD names (the fork's default branch). The guide is advice,
     so a missing origin/HEAD leaves a placeholder rather than failing provision."""
     if repo.ref:
         return repo.ref
-    proc = incus.exec_in(instance, ["git", "-C", workdir, "symbolic-ref", "--short",
-                                    "refs/remotes/origin/HEAD"], user=guest_user, check=False)
+    proc = g.exec(["git", "-C", workdir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+                  user=guest_user, check=False)
     head = (proc.stdout or "").strip()
     if proc.returncode != 0 or not head.startswith("origin/"):
         ui.warn(f"repo {repo.dir}: origin/HEAD is not set, so {GUIDE_PATH} cannot name its base branch; "
@@ -102,11 +102,11 @@ def _base_branch(incus: Incus, instance: str, guest_user: str, workdir: str, rep
     return head[len("origin/"):]
 
 
-def write_workspace_guide(incus: Incus, instance: str, guest_user: str, guest_uid: int,
+def write_workspace_guide(g: Guest, guest_user: str, guest_uid: int,
                           manifest: Manifest, base_branches: dict[str, str]) -> None:
     """Leaves a /workspace/AGENTS.md that asbx did not write untouched."""
-    writable = incus.exec_in(instance, ["bash", "-c", GUIDE_WRITABLE_SCRIPT, "_", GUIDE_PATH, GUIDE_MARKER],
-                             user=guest_user, check=False)
+    writable = g.exec(["bash", "-c", GUIDE_WRITABLE_SCRIPT, "_", GUIDE_PATH, GUIDE_MARKER],
+                      user=guest_user, check=False)
     if writable.returncode != 0:
         ui.warn(f"{GUIDE_PATH} was not written by asbx; leaving it as is")
         return
@@ -114,8 +114,8 @@ def write_workspace_guide(incus: Incus, instance: str, guest_user: str, guest_ui
     if manifest.guide_path:
         with open(manifest.guide_path) as f:
             notes = f.read()
-    incus.push_text(instance, GUIDE_PATH, render_workspace_guide(manifest, base_branches, notes),
-                    mode="0644", uid=guest_uid, gid=guest_uid)
+    g.push_text(GUIDE_PATH, render_workspace_guide(manifest, base_branches, notes),
+                mode="0644", uid=guest_uid, gid=guest_uid)
     ui.ok(GUIDE_PATH)
 
 
@@ -123,56 +123,55 @@ def write_workspace_guide(incus: Incus, instance: str, guest_user: str, guest_ui
 # Provision phase — repos, services, hook
 # ---------------------------------------------------------------------------
 
-def configure_repo_remotes(incus: Incus, instance: str, guest_user: str, workdir: str, repo: Repo) -> None:
+def configure_repo_remotes(g: Guest, guest_user: str, workdir: str, repo: Repo) -> None:
     """Adds/updates git remotes on an already-cloned repo. Idempotent: leaves
     a remote alone if its URL already matches, `set-url`s it if it drifted
     (e.g. the manifest's org changed), and `add`s it if missing."""
     for remote_name, remote_spec in repo.remotes.items():
         remote_url = resolve_remote_url(repo.url, remote_spec)
-        existing = incus.exec_in(instance, ["git", "-C", workdir, "remote", "get-url", remote_name],
-                                  user=guest_user, check=False)
+        existing = g.exec(["git", "-C", workdir, "remote", "get-url", remote_name],
+                          user=guest_user, check=False)
         if existing.returncode == 0:
             if existing.stdout.strip() != remote_url:
-                incus.exec_in(instance, ["git", "-C", workdir, "remote", "set-url", remote_name, remote_url],
-                               user=guest_user, check=False)
+                g.exec(["git", "-C", workdir, "remote", "set-url", remote_name, remote_url],
+                       user=guest_user, check=False)
             continue
-        proc = incus.exec_in(instance, ["git", "-C", workdir, "remote", "add", remote_name, remote_url],
-                              user=guest_user, check=False)
+        proc = g.exec(["git", "-C", workdir, "remote", "add", remote_name, remote_url],
+                      user=guest_user, check=False)
         if proc.returncode != 0:
             raise AsbxError(
                 f"provision failed: repo {repo.dir}: remote add {remote_name} exited {proc.returncode}"
             )
 
 
-def _mise_install(incus: Incus, instance: str, guest_user: str, cwd: str, label: str,
+def _mise_install(g: Guest, guest_user: str, cwd: str, label: str,
                   env: dict[str, str]) -> None:
     """Installs the tools mise resolves for `cwd` so nothing installs lazily on
     first use. An already-installed toolset is a fast no-op."""
     ui.ok(f"{label}: mise install")
-    proc = incus.exec_in(instance, ["mise", "install", "--yes"], user=guest_user, cwd=cwd,
-                         env=env, check=False)
+    proc = g.exec(["mise", "install", "--yes"], user=guest_user, cwd=cwd, env=env, check=False)
     if proc.returncode != 0:
         detail = (proc.stderr or "").strip()
         raise AsbxError(f"provision failed: {label}: mise install exited {proc.returncode}"
                         + (f"\n{detail}" if detail else ""))
 
 
-def run_provision(incus: Incus, instance: str, manifest: Manifest, guest_user: str) -> None:
+def run_provision(g: Guest, manifest: Manifest, guest_user: str) -> None:
     home = f"/home/{guest_user}"
-    incus.exec_in(instance, ["mkdir", "-p", WORKSPACE, f"{home}/.asbx",
-                             *(f"{WORKTREES_DIR}/{r.dir}" for r in manifest.repos)], user=guest_user)
-    guest_uid = incus.uid_of(instance, guest_user)
+    g.exec(["mkdir", "-p", WORKSPACE, f"{home}/.asbx",
+            *(f"{WORKTREES_DIR}/{r.dir}" for r in manifest.repos)], user=guest_user)
+    guest_uid = g.uid_of(guest_user)
 
-    guest.write_mise_config(incus, instance, manifest.tools)
+    guest.write_mise_config(g, manifest.tools)
     # mise install in a repo also installs the system-config tools, so the
     # workspace-level run is only needed when there is no repo to carry it.
     if not manifest.repos:
-        _mise_install(incus, instance, guest_user, WORKSPACE, "tools", manifest.env)
+        _mise_install(g, guest_user, WORKSPACE, "tools", manifest.env)
 
     base_branches: dict[str, str] = {}
     for repo in manifest.repos:
         workdir = f"{WORKSPACE}/{repo.dir}"
-        check = incus.exec_in(instance, ["test", "-d", workdir], user=guest_user, check=False)
+        check = g.exec(["test", "-d", workdir], user=guest_user, check=False)
         cloned_now = check.returncode != 0
         if not cloned_now:
             ui.ok(f"skip {repo.dir} (exists)")
@@ -181,49 +180,48 @@ def run_provision(incus: Incus, instance: str, manifest: Manifest, guest_user: s
             if repo.ref:
                 clone_argv += ["--branch", repo.ref]
             clone_argv += [repo.url, workdir]
-            proc = incus.exec_in(instance, clone_argv, user=guest_user, check=False)
+            proc = g.exec(clone_argv, user=guest_user, check=False)
             if proc.returncode != 0:
                 stderr = proc.stderr or ""
                 if "Authentication" in stderr or "authentication" in stderr or "could not read Username" in stderr:
                     raise AsbxError(f"provision failed: repo {repo.dir}: clone exited {proc.returncode}; run 'asbx auth {manifest.name}' first")
                 raise AsbxError(f"provision failed: repo {repo.dir}: clone exited {proc.returncode}")
 
-        configure_repo_remotes(incus, instance, guest_user, workdir, repo)
-        _mise_install(incus, instance, guest_user, workdir, f"repo {repo.dir}", manifest.env)
+        configure_repo_remotes(g, guest_user, workdir, repo)
+        _mise_install(g, guest_user, workdir, f"repo {repo.dir}", manifest.env)
 
         # Repo setup is a first-clone step, not a per-provision one: it is the
         # manifest's `setup:` hook that is documented as re-running every time.
         if repo.setup and cloned_now:
-            proc = incus.exec_in(instance, ["bash", "-lc", repo.setup], user=guest_user,
-                                  cwd=workdir, env=manifest.env, check=False)
+            proc = g.exec(["bash", "-lc", repo.setup], user=guest_user,
+                          cwd=workdir, env=manifest.env, check=False)
             if proc.returncode != 0:
                 raise AsbxError(f"provision failed: repo {repo.dir}: setup exited {proc.returncode}")
-        base_branches[repo.dir] = _base_branch(incus, instance, guest_user, workdir, repo)
+        base_branches[repo.dir] = _base_branch(g, guest_user, workdir, repo)
 
-    write_workspace_guide(incus, instance, guest_user, guest_uid, manifest, base_branches)
+    write_workspace_guide(g, guest_user, guest_uid, manifest, base_branches)
 
     if manifest.compose_path:
         basename = os.path.basename(manifest.compose_path)
         remote_path = f"{home}/.asbx/services/{basename}"
-        incus.exec_in(instance, ["mkdir", "-p", f"{home}/.asbx/services"], user=guest_user)
-        incus.file_push(instance, manifest.compose_path, remote_path, mode="0644",
-                         uid=guest_uid, gid=guest_uid)
-        incus.exec_in(instance, ["bash", "-c",
-                                  "for i in $(seq 1 30); do docker info >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1"],
-                       user="root", check=False)
-        proc = incus.exec_in(instance, ["docker", "compose", "-f", remote_path, "up", "-d"],
-                              user=guest_user, env=manifest.env, check=False)
+        g.exec(["mkdir", "-p", f"{home}/.asbx/services"], user=guest_user)
+        g.push_file(manifest.compose_path, remote_path, mode="0644",
+                    uid=guest_uid, gid=guest_uid)
+        g.exec(["bash", "-c",
+                "for i in $(seq 1 30); do docker info >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1"],
+               user="root", check=False)
+        proc = g.exec(["docker", "compose", "-f", remote_path, "up", "-d"],
+                      user=guest_user, env=manifest.env, check=False)
         if proc.returncode != 0:
             raise AsbxError(f"provision failed: services: docker compose up exited {proc.returncode}")
 
     if manifest.setup_path:
         remote_path = f"{home}/.asbx/provision.sh"
-        incus.file_push(instance, manifest.setup_path, remote_path, mode="0755",
-                         uid=guest_uid, gid=guest_uid)
-        proc = incus.exec_in(instance, ["bash", "-l", remote_path], user=guest_user,
-                              cwd=WORKSPACE, env=manifest.env, check=False)
+        g.push_file(manifest.setup_path, remote_path, mode="0755",
+                    uid=guest_uid, gid=guest_uid)
+        proc = g.exec(["bash", "-l", remote_path], user=guest_user,
+                      cwd=WORKSPACE, env=manifest.env, check=False)
         if proc.returncode != 0:
             raise AsbxError(f"provision failed: setup hook exited {proc.returncode}")
 
-    incus.config_set(instance, "user.asbx.manifest_sha256", manifest_sha256(manifest.path))
-    ui.ok(f"{instance}: provision complete")
+    ui.ok(f"{g.instance}: provision complete")

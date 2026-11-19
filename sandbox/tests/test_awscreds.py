@@ -1,15 +1,19 @@
-"""Tests for asbxlib.awscreds. The real aws CLI and systemctl are never run."""
+"""Tests for asbxlib.awscreds. The real aws CLI, systemctl and launchctl are never run."""
 from __future__ import annotations
 
 import json
+import os
+import plistlib
 import subprocess
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from asbxlib import awscreds, hostsetup, manifest
+from asbxlib import awscreds, hostsetup, launchd, manifest
 from asbxlib.errors import AsbxError
+from asbxlib.incusbackend import IncusBackend, IncusGuest
 from fake_incus import FakeIncus
+from fake_tart import FakeLaunchctl
 
 NOW = datetime(2030, 1, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -71,7 +75,7 @@ def _joined_calls(fake: FakeIncus) -> list[str]:
 def test_push_writes_tmp_then_renames_then_prunes_stale():
     fake = FakeIncus()
 
-    awscreds.push(fake, "sandbox-a", "agent", {"p": ('{"k": 1}', "us-east-1")})
+    awscreds.push(IncusGuest(fake, "sandbox-a"), "agent", {"p": ('{"k": 1}', "us-east-1")})
 
     calls = _joined_calls(fake)
     tmp_i = next(i for i, c in enumerate(calls) if "file push" in c and "/home/agent/.asbx/aws/p.json.tmp" in c)
@@ -128,7 +132,7 @@ def test_refresh_exports_each_profile_once_per_run(refresh_env):
     fake = FakeIncus()
     _running(fake, "sandbox-a", "sandbox-b")
 
-    rc = awscreds.cmd_aws_refresh(fake, {"guest_user": "agent"}, None)
+    rc = awscreds.cmd_aws_refresh(IncusBackend(fake), {"guest_user": "agent"}, None)
 
     assert rc == 0
     assert exports == ["shared"]
@@ -144,7 +148,7 @@ def test_refresh_partial_failure_returns_1_and_still_pushes_other_instance(refre
     fake = FakeIncus()
     _running(fake, "sandbox-a", "sandbox-b")
 
-    rc = awscreds.cmd_aws_refresh(fake, {"guest_user": "agent"}, None)
+    rc = awscreds.cmd_aws_refresh(IncusBackend(fake), {"guest_user": "agent"}, None)
 
     assert rc == 1
     assert _pushed_instances(fake) == {"sandbox-b"}
@@ -161,7 +165,7 @@ def test_refresh_failed_export_is_not_retried_for_next_instance(refresh_env, mon
     fake = FakeIncus()
     _running(fake, "sandbox-a", "sandbox-b")
 
-    assert awscreds.cmd_aws_refresh(fake, {"guest_user": "agent"}, None) == 1
+    assert awscreds.cmd_aws_refresh(IncusBackend(fake), {"guest_user": "agent"}, None) == 1
     assert calls == ["shared"]
 
 
@@ -170,7 +174,7 @@ def test_refresh_skips_stopped_and_absent_instances(refresh_env):
     _running(fake, stopped=("sandbox-a",))
     fake.stub("info", "sandbox-b", rc=1)
 
-    rc = awscreds.cmd_aws_refresh(fake, {"guest_user": "agent"}, None)
+    rc = awscreds.cmd_aws_refresh(IncusBackend(fake), {"guest_user": "agent"}, None)
 
     assert rc == 0
     assert not any(c[:2] == ["file", "push"] for c in fake.calls)
@@ -181,7 +185,7 @@ def test_refresh_with_group_pushes_only_that_group(refresh_env):
     fake = FakeIncus()
     _running(fake, "sandbox-a", "sandbox-b")
 
-    rc = awscreds.cmd_aws_refresh(fake, {"guest_user": "agent"}, "a")
+    rc = awscreds.cmd_aws_refresh(IncusBackend(fake), {"guest_user": "agent"}, "a")
 
     assert rc == 0
     assert _pushed_instances(fake) == {"sandbox-a"}
@@ -200,7 +204,7 @@ def test_refresh_all_warns_and_continues_when_a_manifest_fails_to_load(refresh_e
     fake = FakeIncus()
     _running(fake, "sandbox-a", "sandbox-b")
 
-    rc = awscreds.cmd_aws_refresh(fake, {"guest_user": "agent"}, None)
+    rc = awscreds.cmd_aws_refresh(IncusBackend(fake), {"guest_user": "agent"}, None)
 
     captured = capsys.readouterr()
     assert "broken manifest a" in captured.out + captured.err
@@ -220,7 +224,7 @@ def test_refresh_with_group_rejects_manifest_without_aws_creds(refresh_env):
     manifests["a"] = _manifest("sandbox-a", ["p"], auth=["github-gh"])
 
     with pytest.raises(AsbxError, match="does not use the aws-creds"):
-        awscreds.cmd_aws_refresh(FakeIncus(), {"guest_user": "agent"}, "a")
+        awscreds.cmd_aws_refresh(IncusBackend(FakeIncus()), {"guest_user": "agent"}, "a")
 
 
 def test_refresh_all_ignores_manifests_without_aws_creds(refresh_env):
@@ -229,7 +233,7 @@ def test_refresh_all_ignores_manifests_without_aws_creds(refresh_env):
     fake = FakeIncus()
     _running(fake, "sandbox-a", "sandbox-b")
 
-    awscreds.cmd_aws_refresh(fake, {"guest_user": "agent"}, None)
+    awscreds.cmd_aws_refresh(IncusBackend(fake), {"guest_user": "agent"}, None)
 
     assert _pushed_instances(fake) == {"sandbox-b"}
 
@@ -262,6 +266,7 @@ def test_install_timer_writes_units_and_enables_timer(tmp_path, monkeypatch):
     recorded: list[tuple] = []
     monkeypatch.setattr(awscreds.Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(awscreds.host, "which", lambda n: True)
+    monkeypatch.setattr(awscreds.sys, "platform", "linux")
     monkeypatch.setattr(awscreds.host, "systemctl_user",
                         lambda *a: recorded.append(a) or _proc())
     monkeypatch.setenv("ASBX_CONFIG_DIR", "/cfg/dir")
@@ -293,7 +298,33 @@ def test_install_timer_requires_aws_cli(monkeypatch):
 def test_install_timer_surfaces_systemctl_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(awscreds.Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(awscreds.host, "which", lambda n: True)
+    monkeypatch.setattr(awscreds.sys, "platform", "linux")
     monkeypatch.setattr(awscreds.host, "systemctl_user", lambda *a: _proc(rc=1, stderr="no bus"))
 
     with pytest.raises(AsbxError, match="no bus"):
         awscreds.install_timer()
+
+
+def test_install_timer_on_macos_installs_and_loads_the_refresh_launch_agent(tmp_path, monkeypatch):
+    launchctl = FakeLaunchctl()
+    monkeypatch.setattr(launchd, "run_launchctl", launchctl)
+    monkeypatch.setattr(awscreds.sys, "platform", "darwin")
+    monkeypatch.setattr(awscreds.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(awscreds.host, "which", lambda n: True)
+    monkeypatch.setenv("ASBX_CONFIG_DIR", "/cfg/dir")
+
+    awscreds.install_timer()
+
+    path = tmp_path / "Library" / "LaunchAgents" / "com.asbx.aws-refresh.plist"
+    job = plistlib.loads(path.read_bytes())
+    assert job["Label"] == "com.asbx.aws-refresh"
+    args = job["ProgramArguments"]
+    assert args[:2] == ["/bin/sh", "-c"]
+    assert args[2].startswith("sleep 2; exec ")
+    assert args[2].endswith(f"{hostsetup.ENTRY_POINT} aws-refresh")
+    assert job["StartInterval"] == 600
+    assert job["WatchPaths"] == [str(tmp_path / ".aws" / "sso" / "cache")]
+    assert job["EnvironmentVariables"]["ASBX_CONFIG_DIR"] == "/cfg/dir"
+    assert "PATH" in job["EnvironmentVariables"]
+    assert ["bootstrap", f"gui/{os.getuid()}", str(path)] in launchctl.calls
+    assert launchctl.loaded["com.asbx.aws-refresh"] == path.read_bytes()

@@ -39,12 +39,22 @@ def zsh_dir() -> Path:
 
 # Login shells a sandbox can use, mapped to their guest path.
 SHELL_PATHS: dict[str, str] = {"bash": "/bin/bash", "zsh": "/usr/bin/zsh"}
+# Values of the top-level `backend` key. `auto` picks by host OS (cli.make_backend).
+BACKENDS = ("auto", "incus", "tart")
 
 DEFAULT_CONFIG: dict[str, Any] = {
+    # VM service: incus (Linux), tart (macOS), or auto for this host's OS.
+    "backend": "auto",
     "guest_user": "agent",
     "instance_prefix": "sandbox-",
     "image_alias": "agent-sandbox-base",
+    # Incus image the base is built from; `tart.base_image_source` on macOS.
     "base_image_source": "images:debian/13/cloud",
+    "tart": {
+        "base_image_source": "ghcr.io/cirruslabs/debian:trixie",
+        # Root-owned dir holding the SUID softnet binary (the egress filter).
+        "softnet_dir": "/usr/local/libexec/asbx",
+    },
     "shell": "bash",
     "network": {
         "name": "incusbr0",
@@ -353,6 +363,9 @@ def load_config() -> dict[str, Any]:
     if cfg["shell"] not in SHELL_PATHS:
         raise AsbxError(
             f"config {config_path()}: 'shell' must be one of: {', '.join(SHELL_PATHS)}")
+    if cfg["backend"] not in BACKENDS:
+        raise AsbxError(
+            f"config {config_path()}: 'backend' must be one of: {', '.join(BACKENDS)}")
     cfg["network"]["ingress"] = validate_ingress(cfg["network"]["ingress"])
     return cfg
 

@@ -6,12 +6,26 @@ import subprocess
 
 import pytest
 
+from asbxlib import incusbackend
 from asbxlib import lifecycle
 from asbxlib import manifest
 from asbxlib import provision
 from asbxlib.errors import AsbxError
+from asbxlib.incusbackend import IncusBackend
 
 from fake_incus import FakeIncus
+
+
+@pytest.fixture
+def quick_boot(monkeypatch):
+    """Boots without waiting; records each NIC pin as (address, started yet)."""
+    pins: list[tuple] = []
+    monkeypatch.setattr(incusbackend, "wait_for_agent", lambda *a, **k: None)
+    monkeypatch.setattr(incusbackend.guest, "wait_for_cloud_init", lambda g: None)
+    monkeypatch.setattr(incusbackend.netacl, "pin_nic", lambda incus, instance, cfg, address=None: pins.append(
+        (address, ["start", instance] in incus.calls)) or "10.210.86.192")
+    return pins
+
 
 # ---------------------------------------------------------------------------
 # classify_repo
@@ -49,7 +63,8 @@ def test_classify_repo_unpushed_commits_are_blocking():
 
 def _fake_manifest(instance: str = "sandbox-demo") -> manifest.Manifest:
     return manifest.Manifest(
-        path="/tmp/x.yaml", name="demo", instance=instance, resources={},
+        path="/tmp/x.yaml", name="demo", instance=instance,
+        resources={"cpu": 2, "memory": "4GiB", "disk": "20GiB"},
         repos=[], mounts=[], compose_path=None, env={}, auth=[],
         setup_path=None, remotes={},
     )
@@ -75,7 +90,7 @@ def test_cmd_rm_with_yes_deletes_instance_and_removes_its_ssh_config_and_host_ke
     fake = FakeIncus()
     fake.set_instance(exists=True)
 
-    lifecycle.cmd_rm(fake, cfg, "demo", yes=True)
+    lifecycle.cmd_rm(IncusBackend(fake), cfg, "demo", yes=True)
 
     assert ["delete", "sandbox-demo", "--force"] in fake.calls
     assert not conf_path.exists()
@@ -100,7 +115,7 @@ def test_cmd_rebuild_refuses_when_workspace_repo_is_dirty_and_force_is_false(mon
     fake.stub("git", "-C", "remote", stdout=REMOTE + "\n")
 
     with pytest.raises(AsbxError, match="unsafe repos"):
-        lifecycle.cmd_rebuild(fake, cfg, "demo", force=False, yes=True)
+        lifecycle.cmd_rebuild(IncusBackend(fake), cfg, "demo", force=False, yes=True)
 
     assert not any("delete" in " ".join(c) for c in fake.calls)
 
@@ -113,24 +128,23 @@ def test_cmd_restore_with_unknown_label_raises_before_any_stop_or_delete(monkeyp
     fake.set_snapshots([])
     fake.stub("info", rc=1)  # copy-name existence check: no fallback copy either
 
-    with pytest.raises(AsbxError, match="no snapshot or copy"):
-        lifecycle.cmd_restore(fake, cfg, "demo", "nonexistent-label", yes=True)
+    with pytest.raises(AsbxError, match="no snapshot named"):
+        lifecycle.cmd_restore(IncusBackend(fake), cfg, "demo", "nonexistent-label", yes=True)
 
     assert not any("stop" in " ".join(c) for c in fake.calls)
     assert not any("delete" in " ".join(c) for c in fake.calls)
 
 
-def test_cmd_restore_from_snapshot_restarts_the_instance_and_rewrites_its_ssh_config(monkeypatch, cfg, tmp_path):
+def test_cmd_restore_from_snapshot_restarts_the_instance_and_rewrites_its_ssh_config(monkeypatch, cfg, tmp_path, quick_boot):
     fake_manifest = _fake_manifest()
     monkeypatch.setattr(lifecycle.manifest_mod, "load_manifest", lambda group, cfg: fake_manifest)
-    monkeypatch.setattr(lifecycle.guest, "wait_for_agent", lambda *a, **k: None)
     cfg["ssh"]["config_dir"] = str(tmp_path / "confs")
     cfg["ssh"]["known_hosts"] = str(tmp_path / "known_hosts")
 
     fake = FakeIncus()
     fake.set_snapshots(["pre1"])
 
-    lifecycle.cmd_restore(fake, cfg, "demo", "pre1", yes=True)
+    lifecycle.cmd_restore(IncusBackend(fake), cfg, "demo", "pre1", yes=True)
 
     assert ["start", "sandbox-demo"] in fake.calls
     assert "HostName sandbox-demo.incus" in (tmp_path / "confs" / "sandbox-demo.conf").read_text()
@@ -142,7 +156,7 @@ def test_cmd_snapshot_refuses_a_label_that_already_exists(monkeypatch, cfg, conf
     fake.set_snapshots(["pre1"])
 
     with pytest.raises(AsbxError, match="already exists"):
-        lifecycle.cmd_snapshot(fake, cfg, "demo", "pre1")
+        lifecycle.cmd_snapshot(IncusBackend(fake), cfg, "demo", "pre1")
 
     assert not any(c[:2] == ["snapshot", "create"] or c[:1] == ["copy"] for c in fake.calls)
 
@@ -155,29 +169,27 @@ def test_cmd_snapshot_copy_fallback_drops_the_pin_from_the_copy(monkeypatch, cfg
     fake.set_instance(exists=True, state="Stopped")
     fake.stub("snapshot", "create", rc=1, stderr="not supported")
 
-    lifecycle.cmd_snapshot(fake, cfg, "demo", "pre1")
+    lifecycle.cmd_snapshot(IncusBackend(fake), cfg, "demo", "pre1")
 
-    copy_name = lifecycle._snapshot_copy_name("sandbox-demo", "pre1")
+    copy_name = incusbackend._snapshot_copy_name("sandbox-demo", "pre1")
     assert ["config", "device", "unset", copy_name, "eth0", "ipv4.address"] in fake.calls
 
 
-def test_cmd_restore_from_a_copy_puts_the_pinned_address_back_before_starting(monkeypatch, cfg, tmp_path):
+def test_cmd_restore_from_a_copy_puts_the_pinned_address_back_before_starting(monkeypatch, cfg, tmp_path, quick_boot):
     monkeypatch.setattr(lifecycle.manifest_mod, "load_manifest", lambda group, cfg: _fake_manifest())
-    monkeypatch.setattr(lifecycle.guest, "wait_for_agent", lambda *a, **k: None)
     cfg["ssh"]["config_dir"] = str(tmp_path / "confs")
     cfg["ssh"]["known_hosts"] = str(tmp_path / "known_hosts")
     fake = FakeIncus()
     fake.set_snapshots([])
+    fake.stub("list", "sandbox-demo-snap-", stdout='[{"name": "sandbox-demo-snap-pre1"}]')
     fake.set_instance(exists=True)
     fake.set_devices({"eth0": {"ipv4.address": "10.210.86.192", "security.ipv4_filtering": "true",
                                "security.mac_filtering": "true"}})
-    pins: list[tuple] = []
-    monkeypatch.setattr(lifecycle.netacl, "pin_nic", lambda incus, instance, cfg, address=None: pins.append(
-        (address, ["start", "sandbox-demo"] in fake.calls)))
 
-    lifecycle.cmd_restore(fake, cfg, "demo", "pre1", yes=True)
+    lifecycle.cmd_restore(IncusBackend(fake), cfg, "demo", "pre1", yes=True)
 
-    assert pins == [("10.210.86.192", False)]
+    assert quick_boot[0] == ("10.210.86.192", False)
+    assert ["copy", "sandbox-demo-snap-pre1", "sandbox-demo"] in fake.calls
 
 
 def _clean_pushed_fake(ls: str, found: str, unrecoverable: str = "", unrecoverable_rc: int = 0,
@@ -201,7 +213,7 @@ def test_find_unsafe_repos_checks_registered_worktrees_beyond_the_find_depth():
     fake.stub("git", "-C", "/workspace/worktrees/r/feat-x", "status", stdout=" M x\n")
     fake.stub("git", "-C", "/home/agent/.omp/wt/7-abc", "status", stdout="?? y\n")
 
-    assert lifecycle.find_unsafe_repos(fake, "sandbox-demo", "demo", "agent") == [
+    assert lifecycle.find_unsafe_repos(IncusBackend(fake), "sandbox-demo", "demo", "agent") == [
         "/home/agent/.omp/wt/7-abc: dirty (uncommitted changes)",
         "worktrees/r/feat-x: dirty (uncommitted changes)"]
 
@@ -210,7 +222,7 @@ def test_find_unsafe_repos_blocks_when_a_repo_cannot_list_its_worktrees():
     fake = _clean_pushed_fake("r\n", "/workspace/r\n")
     fake.stub("worktree", "list", rc=128)
 
-    assert lifecycle.find_unsafe_repos(fake, "sandbox-demo", "demo", "agent") == [
+    assert lifecycle.find_unsafe_repos(IncusBackend(fake), "sandbox-demo", "demo", "agent") == [
         "r: cannot list its worktrees — their work cannot be checked"]
 
 
@@ -222,13 +234,13 @@ def test_find_unsafe_repos_reports_unpushed_commits_once_per_repository_from_its
         "worktree /workspace/z\nHEAD 1\nbranch refs/heads/main\n\n"
         "worktree /workspace/a-wt\nHEAD 2\nbranch refs/heads/a\n"))
 
-    assert lifecycle.find_unsafe_repos(fake, "sandbox-demo", "demo", "agent") == ["z: unpushed commits"]
+    assert lifecycle.find_unsafe_repos(IncusBackend(fake), "sandbox-demo", "demo", "agent") == ["z: unpushed commits"]
 
 
 def test_find_unsafe_repos_names_each_entry_holding_files_outside_any_repo():
     fake = _clean_pushed_fake("scratch\nworktrees\n", "", unrecoverable="scratch\nworktrees/web/notes.md\n")
 
-    assert lifecycle.find_unsafe_repos(fake, "sandbox-demo", "demo", "agent") == [
+    assert lifecycle.find_unsafe_repos(IncusBackend(fake), "sandbox-demo", "demo", "agent") == [
         "scratch: not a git repository — contents cannot be recovered",
         "worktrees: holds files outside any git repository (e.g. worktrees/web/notes.md) — "
         "they cannot be recovered"]
@@ -237,7 +249,7 @@ def test_find_unsafe_repos_names_each_entry_holding_files_outside_any_repo():
 def test_find_unsafe_repos_blocks_when_the_guest_cannot_check_for_files_outside_repos():
     fake = _clean_pushed_fake("scratch\n", "", unrecoverable="scratch\n", unrecoverable_rc=1)
 
-    assert lifecycle.find_unsafe_repos(fake, "sandbox-demo", "demo", "agent") == [
+    assert lifecycle.find_unsafe_repos(IncusBackend(fake), "sandbox-demo", "demo", "agent") == [
         "/workspace: cannot check it for files outside git repositories — they could be lost"]
 
 
@@ -294,7 +306,7 @@ def test_cmd_rebuild_refuses_when_workspace_cannot_be_listed(monkeypatch, cfg):
     fake.stub("ls", "-1", rc=2)
 
     with pytest.raises(AsbxError, match="cannot list /workspace"):
-        lifecycle.cmd_rebuild(fake, cfg, "demo", force=False, yes=True)
+        lifecycle.cmd_rebuild(IncusBackend(fake), cfg, "demo", force=False, yes=True)
 
     assert not any("delete" in " ".join(c) for c in fake.calls)
 
@@ -305,12 +317,12 @@ def test_cmd_rebuild_keeps_the_pinned_address_and_checks_the_firewall_before_del
     fake.set_devices({"eth0": {"ipv4.address": "10.210.86.192", "security.ipv4_filtering": "true",
                                "security.mac_filtering": "true"}})
     order: list[str] = []
-    monkeypatch.setattr(lifecycle.ingress, "require_firewall", lambda cfg: order.append("firewall"))
+    monkeypatch.setattr(incusbackend.ingress, "require_firewall", lambda cfg: order.append("firewall"))
     monkeypatch.setattr(lifecycle, "cmd_rm", lambda incus, cfg, group, yes: order.append("rm"))
     monkeypatch.setattr(lifecycle.up, "cmd_up", lambda incus, cfg, group, no_auth, no_provision, ipv4:
                         order.append(f"up {ipv4}"))
 
-    lifecycle.cmd_rebuild(fake, cfg, "demo", force=False, yes=True)
+    lifecycle.cmd_rebuild(IncusBackend(fake), cfg, "demo", force=False, yes=True)
 
     assert order == ["firewall", "rm", "up 10.210.86.192"]
 
@@ -321,10 +333,10 @@ def test_cmd_rebuild_refuses_without_the_ingress_firewall_and_deletes_nothing(mo
 
     def no_firewall(cfg):
         raise AsbxError("run 'asbx ingress setup'")
-    monkeypatch.setattr(lifecycle.ingress, "require_firewall", no_firewall)
+    monkeypatch.setattr(incusbackend.ingress, "require_firewall", no_firewall)
 
     with pytest.raises(AsbxError, match="asbx ingress setup"):
-        lifecycle.cmd_rebuild(fake, cfg, "demo", force=False, yes=True)
+        lifecycle.cmd_rebuild(IncusBackend(fake), cfg, "demo", force=False, yes=True)
 
     assert not any("delete" in " ".join(c) for c in fake.calls)
 
@@ -340,7 +352,7 @@ def test_cmd_shell_runs_the_configured_login_shell_and_root_keeps_bash(
     cfg["shell"] = shell
     fake = FakeIncus()
 
-    lifecycle.cmd_shell(fake, cfg, "demo", root=root)
+    lifecycle.cmd_shell(IncusBackend(fake), cfg, "demo", root=root)
 
     assert f"{expected} -l" in " ".join(fake.calls[-1])
 
@@ -348,14 +360,14 @@ def test_cmd_shell_runs_the_configured_login_shell_and_root_keeps_bash(
 @pytest.mark.parametrize("command", ["start", "restart"])
 @pytest.mark.parametrize("reachable", [True, False])
 def test_start_and_restart_wait_for_ssh_and_only_warn_when_it_never_answers(
-        monkeypatch, cfg, capsys, command, reachable):
+        monkeypatch, cfg, capsys, command, reachable, quick_boot):
     monkeypatch.setattr(lifecycle.manifest_mod, "load_manifest", lambda group, cfg: _fake_manifest())
     fake = FakeIncus()
     probes: list[tuple] = []
     monkeypatch.setattr(lifecycle.host, "wait_for_port", lambda name, port: probes.append(
         (name, port, [command, "sandbox-demo"] in fake.calls)) or reachable)
 
-    getattr(lifecycle, f"cmd_{command}")(fake, cfg, "demo")
+    getattr(lifecycle, f"cmd_{command}")(IncusBackend(fake), cfg, "demo")
 
     assert probes == [("sandbox-demo.incus", 22, True)]
     assert ("not reachable yet" in capsys.readouterr().err) is not reachable

@@ -1,17 +1,13 @@
 from __future__ import annotations
 
 import re
-import sys
 from datetime import datetime, timezone
 from typing import Optional
 
+from .backend import ABSENT, META_EGRESS_MODE, META_MANIFEST_SHA256, SandboxBackend
 from .errors import AsbxError
-from .incus import Incus
 from . import config
 from . import host
-from . import guest
-from . import ingress
-from . import netacl
 from . import sshconf
 from . import ui
 from . import up
@@ -20,7 +16,7 @@ from . import provision
 
 
 # ---------------------------------------------------------------------------
-# Rebuild safety classification (pure, testable without Incus)
+# Rebuild safety classification (pure, testable without a VM)
 # ---------------------------------------------------------------------------
 
 def classify_repo(dir_name: str, status_porcelain: str, remote_output: str, unpushed_log: str) -> Optional[str]:
@@ -37,17 +33,17 @@ def classify_repo(dir_name: str, status_porcelain: str, remote_output: str, unpu
 # Lifecycle commands
 # ---------------------------------------------------------------------------
 
-def cmd_list(incus: Incus, cfg: dict) -> None:
+def cmd_list(backend: SandboxBackend, cfg: dict) -> None:
     groups = manifest_mod.manifest_groups(cfg)
     rows = []
     for group, instance in groups:
-        exists = incus.instance_exists(instance)
-        state = incus.instance_state(instance) if exists else "absent"
-        egress_mode = incus.config_get(instance, "user.asbx.egress_mode") if exists else ""
+        state = backend.state(instance)
+        exists = state != ABSENT
+        egress_mode = backend.meta_get(instance, META_EGRESS_MODE) if exists else ""
         manifest = manifest_mod.load_manifest(group, cfg)
         drift = ""
         if exists:
-            recorded = incus.config_get(instance, "user.asbx.manifest_sha256")
+            recorded = backend.meta_get(instance, META_MANIFEST_SHA256)
             current = manifest_mod.manifest_sha256(manifest.path)
             if recorded and recorded != current:
                 drift = "manifest: drifted"
@@ -65,7 +61,7 @@ def cmd_list(incus: Incus, cfg: dict) -> None:
         print(fmt(row))
 
 
-def cmd_ssh(incus: Incus, cfg: dict, group: str, extra: list[str]) -> None:
+def cmd_ssh(backend: SandboxBackend, cfg: dict, group: str, extra: list[str]) -> None:
     manifest = manifest_mod.load_manifest(group, cfg)
     instance = manifest.instance
     conf_path = sshconf.config_file(cfg, instance)
@@ -75,115 +71,67 @@ def cmd_ssh(incus: Incus, cfg: dict, group: str, extra: list[str]) -> None:
     host.exec_ssh(argv)
 
 
-def cmd_shell(incus: Incus, cfg: dict, group: str, root: bool) -> None:
+def cmd_shell(backend: SandboxBackend, cfg: dict, group: str, root: bool) -> None:
     manifest = manifest_mod.load_manifest(group, cfg)
-    instance = manifest.instance
     user = "root" if root else cfg["guest_user"]
     shell = ["bash", "-l"] if root else [config.SHELL_PATHS[cfg["shell"]], "-l"]
-    incus.exec_in(instance, shell, user=user, tty=True, check=False)
+    backend.guest(manifest.instance).exec(shell, user=user, tty=True, check=False)
 
 
-def cmd_start(incus: Incus, cfg: dict, group: str) -> None:
+def cmd_start(backend: SandboxBackend, cfg: dict, group: str) -> None:
     manifest = manifest_mod.load_manifest(group, cfg)
-    incus.run("start", manifest.instance)
-    _wait_for_ssh(cfg, manifest.instance)
+    backend.start(cfg, up.spec_for(manifest))
+    _wait_for_ssh(backend, cfg, manifest.instance)
     ui.ok(f"started {manifest.instance}")
 
 
-def cmd_stop(incus: Incus, cfg: dict, group: str) -> None:
+def cmd_stop(backend: SandboxBackend, cfg: dict, group: str) -> None:
     manifest = manifest_mod.load_manifest(group, cfg)
-    incus.run("stop", manifest.instance)
+    backend.stop(manifest.instance)
     ui.ok(f"stopped {manifest.instance}")
 
 
-def _wait_for_ssh(cfg: dict, instance: str) -> None:
-    """`incus start/restart` return at power-on; sshd and the bridge DNS entry
-    come up later, so a prompt `asbx ssh` would hit 'No route to host'. The
-    instance did start, so a port that never answers is a warning, not a failure."""
-    hostname = sshconf.instance_hostname(instance, cfg)
-    if not host.wait_for_port(hostname, 22):
-        ui.warn(f"{hostname}:22 not reachable yet; run 'asbx doctor'")
+def _wait_for_ssh(backend: SandboxBackend, cfg: dict, instance: str) -> None:
+    """sshd and the address the host reaches it on come up after the guest
+    agent, so a prompt `asbx ssh` would hit 'No route to host'. The sandbox
+    did start, so a port that never answers is a warning, not a failure."""
+    address = backend.ssh_address(cfg, instance)
+    if not address or not host.wait_for_port(address, 22):
+        ui.warn(f"{instance}: ssh ({address or 'no address yet'}:22) not reachable yet; run 'asbx doctor'")
 
 
-def cmd_restart(incus: Incus, cfg: dict, group: str) -> None:
+def cmd_restart(backend: SandboxBackend, cfg: dict, group: str) -> None:
     manifest = manifest_mod.load_manifest(group, cfg)
-    incus.run("restart", manifest.instance)
-    _wait_for_ssh(cfg, manifest.instance)
+    backend.restart(cfg, up.spec_for(manifest))
+    _wait_for_ssh(backend, cfg, manifest.instance)
     ui.ok(f"restarted {manifest.instance}")
 
 
-def _snapshot_copy_name(instance: str, label: str) -> str:
-    return f"{instance}-snap-{label}"
-
-
-def cmd_snapshot(incus: Incus, cfg: dict, group: str, label: Optional[str]) -> None:
+def cmd_snapshot(backend: SandboxBackend, cfg: dict, group: str, label: Optional[str]) -> None:
     manifest = manifest_mod.load_manifest(group, cfg)
     instance = manifest.instance
     if not label:
         label = f"pre-{datetime.now(timezone.utc):%Y%m%d%H%M}"
-    if incus.storage_driver("default") == "dir":
-        print("notice: dir storage pool; snapshot copies the full root disk", file=sys.stderr)
-
-    if label in incus.snapshot_list(instance):
+    if label in backend.snapshots(instance):
         raise AsbxError(f"snapshot {instance}/{label} already exists; pick another label")
-
-    proc = incus.snapshot_create(instance, label)
-    if proc.returncode == 0:
-        ui.ok(f"snapshot {instance}/{label} created")
-        return
-
-    state = incus.instance_state(instance)
-    if state == "Running":
-        incus.run("stop", instance)
-        proc = incus.snapshot_create(instance, label)
-        incus.run("start", instance)
-        if proc.returncode == 0:
-            ui.ok(f"snapshot {instance}/{label} created (stopped for copy)")
-            return
-
-    ui.warn("pool driver does not support VM snapshots; falling back to incus copy")
-    copy_name = _snapshot_copy_name(instance, label)
-    incus.run("copy", instance, copy_name, "--instance-only")
-    # Incus refuses to start a NIC whose static IPv4 another NIC already has,
-    # stopped or not, so the copy must not keep the pin; restore puts it back.
-    incus.run("config", "device", "unset", copy_name, "eth0", "ipv4.address", check=False)
-    ui.ok(f"snapshot {instance}/{label} created via copy ({copy_name})")
+    backend.snapshot(cfg, up.spec_for(manifest), label)
 
 
-def cmd_restore(incus: Incus, cfg: dict, group: str, label: str, yes: bool) -> None:
+def cmd_restore(backend: SandboxBackend, cfg: dict, group: str, label: str, yes: bool) -> None:
     manifest = manifest_mod.load_manifest(group, cfg)
     instance = manifest.instance
 
-    # Resolve what `label` actually names BEFORE touching the instance: a
-    # snapshot, a fallback copy, or nothing at all. The instance is only
-    # destroyed once the copy it is to be rebuilt from is known to exist.
-    from_snapshot = label in incus.snapshot_list(instance)
-    copy_name = _snapshot_copy_name(instance, label)
-    from_copy = not from_snapshot and incus.instance_exists(copy_name)
-    if not from_snapshot and not from_copy:
-        raise AsbxError(
-            f"{instance}: no snapshot or copy named '{label}' "
-            f"(snapshots: {', '.join(incus.snapshot_list(instance)) or 'none'})"
-        )
+    labels = backend.snapshots(instance)
+    if label not in labels:
+        raise AsbxError(f"{instance}: no snapshot named '{label}' "
+                        f"(snapshots: {', '.join(labels) or 'none'})")
 
     if not yes:
         if not ui.confirm(f"restore {instance} to snapshot '{label}'? This discards current state. [y/N] "):
             raise AsbxError("aborted")
 
-    incus.run("stop", instance, check=False)
-    if from_snapshot:
-        proc = incus.snapshot_restore(instance, label)
-        if proc.returncode != 0:
-            raise AsbxError(f"{instance}: restoring snapshot '{label}' failed:\n{(proc.stderr or '').strip()}")
-    else:
-        ipv4 = netacl.pinned_ipv4(incus, instance)
-        incus.run("delete", instance, "--force")
-        incus.run("copy", copy_name, instance)
-        if ipv4:
-            netacl.pin_nic(incus, instance, cfg, address=ipv4)
-    incus.run("start", instance)
-    guest.wait_for_agent(incus, instance)
-    sshconf.write_ssh_config(instance, cfg)
+    backend.restore(cfg, up.spec_for(manifest), label)
+    sshconf.write_ssh_config(cfg, instance, backend.ssh_route(cfg, instance))
     ui.ok(f"{instance} restored to {label}")
 
 
@@ -223,23 +171,22 @@ find "$ws" -mindepth 1 "${args[@]}" ! -type d -print |
 """
 
 
-def find_unsafe_repos(incus: Incus, instance: str, group: str, guest_user: str) -> list[str]:
+def find_unsafe_repos(backend: SandboxBackend, instance: str, group: str, guest_user: str) -> list[str]:
     """Everything whose loss a rebuild would cause: each repo found within
     three levels of /workspace, plus every worktree git has registered for
     one, wherever it lives (e.g. /workspace/worktrees/<repo>/<branch>, or omp's
     ~/.omp/wt)."""
+    g = backend.guest(instance)
     # An unreadable /workspace must never be mistaken for "no repos to lose":
     # that would let rebuild destroy unpushed work unwarned.
-    listing = incus.exec_in(instance, ["bash", "-c", "ls -1 /workspace"],
-                            user=guest_user, check=False)
+    listing = g.exec(["bash", "-c", "ls -1 /workspace"], user=guest_user, check=False)
     if listing.returncode != 0:
-        state = incus.instance_state(instance)
         raise AsbxError(
-            f"{instance}: cannot list /workspace (state={state}); "
+            f"{instance}: cannot list /workspace (state={backend.state(instance)}); "
             f"start it first ('asbx start {group}') so rebuild can check for unsaved work"
         )
-    found = incus.exec_in(instance, ["find", "/workspace", "-maxdepth", "3", "-name", ".git",
-                                      "-printf", "%h\\n"], user=guest_user, check=False)
+    found = g.exec(["find", "/workspace", "-maxdepth", "3", "-name", ".git", "-printf", "%h\\n"],
+                   user=guest_user, check=False)
     found_roots = {r for r in (found.stdout or "").splitlines() if r.startswith("/workspace/")}
     repo_roots = set(found_roots)
     # Worktrees share their repository's branches, so `git log --branches`
@@ -251,8 +198,8 @@ def find_unsafe_repos(incus: Incus, instance: str, group: str, guest_user: str) 
     for root in sorted(found_roots):
         if root in listed:
             continue
-        proc = incus.exec_in(instance, ["git", "-C", root, "worktree", "list", "--porcelain"],
-                             user=guest_user, check=False)
+        proc = g.exec(["git", "-C", root, "worktree", "list", "--porcelain"],
+                      user=guest_user, check=False)
         if proc.returncode != 0:
             blocking.append(f"{root[len('/workspace/'):]}: cannot list its worktrees — "
                             f"their work cannot be checked")
@@ -266,10 +213,10 @@ def find_unsafe_repos(incus: Incus, instance: str, group: str, guest_user: str) 
     # Registered worktrees can sit next to anything (one shared worktrees/
     # dir holds every repo's), so the check covers every file outside a repo
     # rather than whole top-level entries.
-    checked = incus.exec_in(instance, ["bash", "-c", UNRECOVERABLE_SCRIPT, "_", "/workspace",
-                                       manifest_mod.GUIDE_NAME, provision.GUIDE_MARKER,
-                                       *(_find_path_pattern(r) for r in sorted(repo_roots))],
-                            user=guest_user, check=False)
+    checked = g.exec(["bash", "-c", UNRECOVERABLE_SCRIPT, "_", "/workspace",
+                      manifest_mod.GUIDE_NAME, provision.GUIDE_MARKER,
+                      *(_find_path_pattern(r) for r in sorted(repo_roots))],
+                     user=guest_user, check=False)
     if checked.returncode != 0:
         blocking.append("/workspace: cannot check it for files outside git repositories — "
                         "they could be lost")
@@ -281,45 +228,42 @@ def find_unsafe_repos(incus: Incus, instance: str, group: str, guest_user: str) 
 
     for root in sorted(repo_roots):
         name = root[len("/workspace/"):] if root.startswith("/workspace/") else root
-        status = incus.exec_in(instance, ["git", "-C", root, "status", "--porcelain"],
-                               user=guest_user, check=False)
-        remote = incus.exec_in(instance, ["git", "-C", root, "remote"],
-                               user=guest_user, check=False)
+        status = g.exec(["git", "-C", root, "status", "--porcelain"], user=guest_user, check=False)
+        remote = g.exec(["git", "-C", root, "remote"], user=guest_user, check=False)
         unpushed = ""
         if root in log_roots:
-            unpushed = incus.exec_in(instance, ["git", "-C", root, "log", "--branches", "--not",
-                                                 "--remotes", "--oneline"],
-                                     user=guest_user, check=False).stdout
+            unpushed = g.exec(["git", "-C", root, "log", "--branches", "--not", "--remotes", "--oneline"],
+                              user=guest_user, check=False).stdout
         msg = classify_repo(name, status.stdout, remote.stdout, unpushed)
         if msg:
             blocking.append(msg)
     return blocking
 
 
-def cmd_rebuild(incus: Incus, cfg: dict, group: str, force: bool, yes: bool) -> None:
+def cmd_rebuild(backend: SandboxBackend, cfg: dict, group: str, force: bool, yes: bool) -> None:
     manifest = manifest_mod.load_manifest(group, cfg)
     instance = manifest.instance
 
     ipv4 = None
-    if incus.instance_exists(instance):
-        blocking = find_unsafe_repos(incus, instance, group, cfg["guest_user"])
+    if backend.state(instance) != ABSENT:
+        blocking = find_unsafe_repos(backend, instance, group, cfg["guest_user"])
         if blocking and not force:
             raise AsbxError("rebuild refused, unsafe repos:\n  " + "\n  ".join(blocking))
         # Kept so client configs and `ssh-config --direct` stanzas survive the rebuild.
-        ipv4 = netacl.pinned_ipv4(incus, instance)
+        ipv4 = backend.pinned_ipv4(instance)
 
     # `up` would refuse after the delete; refuse before it instead.
-    ingress.require_firewall(cfg)
+    backend.preflight(cfg)
 
     if not yes:
         if not ui.confirm_exact(f"type '{group}' to confirm rebuild of {instance}: ", group):
             raise AsbxError("aborted")
 
-    cmd_rm(incus, cfg, group, yes=True)
-    up.cmd_up(incus, cfg, group, no_auth=False, no_provision=False, ipv4=ipv4)
+    cmd_rm(backend, cfg, group, yes=True)
+    up.cmd_up(backend, cfg, group, no_auth=False, no_provision=False, ipv4=ipv4)
 
 
-def cmd_rm(incus: Incus, cfg: dict, group: str, yes: bool) -> None:
+def cmd_rm(backend: SandboxBackend, cfg: dict, group: str, yes: bool) -> None:
     manifest = manifest_mod.load_manifest(group, cfg)
     instance = manifest.instance
 
@@ -327,10 +271,10 @@ def cmd_rm(incus: Incus, cfg: dict, group: str, yes: bool) -> None:
         if not ui.confirm(f"delete {instance}? [y/N] "):
             raise AsbxError("aborted")
 
-    incus.run("delete", instance, "--force", check=False)
+    route = backend.ssh_route(cfg, instance)
+    backend.delete(instance)
 
     sshconf.remove_ssh_config(cfg, instance)
-    host.forget_host_key(config.expand(cfg["ssh"]["known_hosts"]),
-                         sshconf.instance_hostname(instance, cfg))
+    host.forget_host_key(config.expand(cfg["ssh"]["known_hosts"]), route.host_key_alias)
 
     ui.ok(f"removed {instance}")

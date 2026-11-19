@@ -1,20 +1,17 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Optional
 
+from .backend import ABSENT, META_EGRESS_MODE, RUNNING, Guest, SandboxBackend, add_check
 from .errors import AsbxError
-from .incus import Incus
 from . import awscreds
-from . import ui
-from . import host
 from . import config
 from . import guest
-from . import ingress
+from . import host
 from . import sshconf
-from . import netacl
 from . import netcheck
 from . import manifest as manifest_mod
 
@@ -36,15 +33,14 @@ def doctor_mounts(cfg: dict) -> list[manifest_mod.Mount]:
     return list(by_guest.values())
 
 
-def aws_credential_results(incus: Incus, manifest: manifest_mod.Manifest, group: str,
+def aws_credential_results(g: Guest, manifest: manifest_mod.Manifest, group: str,
                            guest_user: str, now: datetime) -> list[tuple[str, str]]:
     """One (status, message) per allowed profile, from the credential file the
     guest holds for it."""
     results = []
     for profile in manifest.aws_profiles:
-        proc = incus.exec_in(
-            manifest.instance, ["cat", awscreds.guest_creds_file(guest_user, profile)],
-            user=guest_user, check=False)
+        proc = g.exec(["cat", awscreds.guest_creds_file(guest_user, profile)],
+                      user=guest_user, check=False)
         if proc.returncode != 0:
             status, msg = "FAIL", "missing"
         else:
@@ -56,40 +52,13 @@ def aws_credential_results(incus: Incus, manifest: manifest_mod.Manifest, group:
     return results
 
 
-def cmd_doctor(incus: Incus, cfg: Optional[dict], fix: bool) -> int:
+def cmd_doctor(backend: SandboxBackend, cfg: Optional[dict], fix: bool) -> int:
     results: list[tuple[str, str]] = []  # (PASS/FAIL/WARN, message)
+    check = partial(add_check, results)
 
-    def check(label, ok_cond, fail_msg, warn_cond=False):
-        if ok_cond:
-            results.append(("PASS", label))
-        elif warn_cond:
-            results.append(("WARN", f"{label}: {fail_msg}"))
-        else:
-            results.append(("FAIL", f"{label}: {fail_msg}"))
-
-    incus_on_path = host.which("incus")
-    check("incus on PATH", incus_on_path, "not found")
-
-    server_ok = False
-    drivers_info = ""
-    if incus_on_path:
-        proc = incus.info()
-        server_ok = proc.returncode == 0
-        drivers_info = proc.stdout
-    check("incus server reachable", server_ok, "incus info failed")
-    check("qemu driver available", "qemu" in drivers_info.lower(), "qemu driver not listed in incus info")
-
-    kvm_ok = os.access("/dev/kvm", os.R_OK | os.W_OK)
-    check("/dev/kvm readable", kvm_ok, "/dev/kvm not accessible")
-
+    results.append(("PASS", f"backend {backend.name}"))
     check("PyYAML importable", True, "")  # we're already running with yaml imported
-
-    version = netacl.parse_incus_version(drivers_info) if server_ok else None
-    if server_ok:
-        check("Incus supports bridged-NIC ACLs",
-              version is not None and netacl.bridged_nic_acl_supported(version),
-              f"server_version {'.'.join(map(str, version)) if version else 'unreadable'}; need >= 6.0.4 "
-              "on the 6.0 LTS or >= 6.10 (7.0 LTS recommended); sandboxes cannot be filtered without it")
+    results.extend(backend.doctor_checks(cfg, fix))
 
     if cfg is None:
         check("config present", False, f"no config at {config.config_path()}; run 'asbx init' first")
@@ -109,64 +78,6 @@ def cmd_doctor(incus: Incus, cfg: Optional[dict], fix: bool) -> int:
         include_present = True
     check("Include line in ~/.ssh/config", include_present, "missing or not the first directive")
 
-    # ADR 0005: ineligible interfaces only warn here; `up` and `ingress setup` refuse them.
-    interface_problems = ingress.interface_problems(cfg)
-    for name, why in interface_problems.items():
-        check(f"ingress interface {name}", False,
-              f"it {why}; 'asbx up' and 'asbx ingress setup' refuse it", warn_cond=True)
-    if ingress.firewall_opted_in(cfg):
-        firewall_ok = ingress.firewall_installed_matches(cfg) and ingress.firewall_unit_active()
-        if not firewall_ok and fix and not interface_problems:
-            try:
-                ingress.install(cfg, yes=False, print_only=False)
-            except AsbxError as e:
-                ui.warn(f"--fix could not install the ingress firewall: {e}")
-        fix_hint = "" if fix else "; run 'asbx ingress setup' (or doctor --fix)"
-        check(f"{ingress.FIREWALL_PATH} matches config", ingress.firewall_installed_matches(cfg),
-              f"missing or out of date; 'asbx up' refuses until it matches{fix_hint}")
-        check(f"{ingress.UNIT_NAME} active", ingress.firewall_unit_active(),
-              f"the inbound default-deny is not loaded at boot{fix_hint}")
-    else:
-        results.append(("PASS", "ingress firewall not installed (opt-in: 'asbx ingress setup')"))
-    managed = ingress.managed_interface(cfg)
-    if managed:
-        check(f"wg-quick@{managed} active", ingress.unit_active(f"wg-quick@{managed}"),
-              "managed WireGuard is enabled but not running; run 'asbx ingress setup'", warn_cond=True)
-        check("network.ingress.wireguard.endpoint set", bool(cfg["network"]["ingress"]["wireguard"]["endpoint"]),
-              "'asbx client-config' needs the host:port clients dial", warn_cond=True)
-
-    if incus_on_path and server_ok:
-        fingerprint = incus.image_alias_exists(cfg["image_alias"])
-        check("base image alias exists", bool(fingerprint), f"{cfg['image_alias']} not found; run 'asbx build-base'")
-
-        net_cfg = cfg["network"]
-        acl_exists = incus.network_acl_exists(net_cfg["acl"])
-        if not acl_exists and fix:
-            try:
-                netacl.ensure_acl(incus, cfg)
-                acl_exists = incus.network_acl_exists(net_cfg["acl"])
-            except AsbxError as e:
-                ui.warn(f"--fix could not create the ACL: {e}")
-        check("network ACL exists", acl_exists, f"{net_cfg['acl']} not found"
-              + ("" if fix else "; re-run with --fix to create it"))
-        if acl_exists:
-            matches = netacl.acl_matches_config(incus, cfg)
-            if not matches and fix:
-                try:
-                    netacl.ensure_acl(incus, cfg)
-                    matches = netacl.acl_matches_config(incus, cfg)
-                except AsbxError as e:
-                    ui.warn(f"--fix could not update the ACL: {e}")
-            check("ACL rule set matches computed drop sets", matches,
-                  "rule set differs from expected"
-                  + ("" if fix else "; re-run with --fix to rewrite it"),
-                  warn_cond=not fix)
-
-        driver = incus.storage_driver("default")
-        driver_dir = driver == "dir"
-        check("storage pool driver", not driver_dir,
-              "dir pool: snapshots are full root-disk copies", warn_cond=driver_dir)
-
     for mount in doctor_mounts(cfg):
         host_path = config.expand(mount.host)
         if not host_path.exists():
@@ -178,50 +89,35 @@ def cmd_doctor(incus: Incus, cfg: Optional[dict], fix: bool) -> int:
     aws_manifests = dict(awscreds.aws_targets(cfg, None))
     if aws_manifests:
         check("aws CLI on PATH", host.which("aws"), "needed by the aws-creds provider")
-        check(f"{awscreds.TIMER_UNIT} active",
-              host.systemctl_user("is-active", awscreds.TIMER_UNIT).returncode == 0,
-              "run 'asbx aws-refresh --install-timer'", warn_cond=True)
-        check(f"{awscreds.PATH_UNIT} active",
-              host.systemctl_user("is-active", awscreds.PATH_UNIT).returncode == 0,
-              "run 'asbx aws-refresh --install-timer'", warn_cond=True)
+        for label, active in awscreds.refresh_job_status():
+            check(label, active, "run 'asbx aws-refresh --install-timer'", warn_cond=True)
 
     for group, instance in manifest_mod.manifest_groups(cfg):
-        exists = incus_on_path and server_ok and incus.instance_exists(instance)
-        state = incus.instance_state(instance) if exists else "absent"
-        egress_mode = incus.config_get(instance, "user.asbx.egress_mode") if exists else "n/a"
+        try:
+            state = backend.state(instance)
+        except AsbxError:
+            state = "unknown"
+        exists = state not in (ABSENT, "unknown")
+        egress_mode = backend.meta_get(instance, META_EGRESS_MODE) if exists else "n/a"
         results.append(("PASS", f"manifest {group}: instance {instance} state={state} egress_mode={egress_mode}"))
 
-        if exists:
-            check(f"{instance}: egress ACL attached", egress_mode == "acl",
-                  f"egress_mode={egress_mode or 'unset'}; "
-                  + (f"run 'asbx rebuild {group}' (the in-guest firewall fallback is gone)"
-                     if egress_mode == "guest-nft" else f"run 'asbx up {group}'"))
-            pinned = netacl.pinned_ipv4(incus, instance)
-            check(f"{instance}: eth0 pinned with IP/MAC filtering", pinned is not None,
-                  f"anti-spoofing is off or the IPv4 isn't pinned; run 'asbx up {group}'")
-
-        if state == "Running":
-            hostname = sshconf.instance_hostname(instance, cfg)
-            check(f"{instance}: {hostname} resolves on the host", host.resolves(hostname),
-                  f"the host resolver does not know {hostname}; point systemd-resolved at the bridge: "
-                  f"resolvectl dns {cfg['network']['name']} <bridge ipv4 address> && "
-                  f"resolvectl domain {cfg['network']['name']} '~{cfg['network']['dns_domain']}' "
-                  "(see sandbox/docs/host-setup.md, 'Name resolution', to make it persistent)")
-            has_route = netcheck.guest_has_ipv4_default_route(incus, instance)
+        if state == RUNNING:
+            g = backend.guest(instance)
+            has_route = netcheck.guest_has_ipv4_default_route(g)
             check(f"{instance}: guest has IPv4 default route", has_route,
                   "no default IPv4 route in the guest; DHCP likely never completed "
-                  "(check whatever filters the bridge's inbound DHCP traffic, e.g. a "
+                  "(check whatever filters the sandbox network's inbound DHCP traffic, e.g. a "
                   "host firewall's default-deny policy on port 67/udp)")
             if has_route:
-                has_egress = netcheck.guest_has_ipv4_egress(incus, instance)
+                has_egress = netcheck.guest_has_ipv4_egress(g)
                 check(f"{instance}: guest IPv4 internet egress", has_egress,
                       "TCP handshake to api.github.com:443 timed out; check whatever "
-                      "filters forwarded/routed traffic from the bridge to your "
+                      "filters forwarded/routed traffic from the sandbox network to your "
                       "uplink (e.g. a host firewall's default-deny FORWARD policy)")
 
             if group in aws_manifests:
                 results.extend(aws_credential_results(
-                    incus, aws_manifests[group], group, cfg["guest_user"], datetime.now(timezone.utc)))
+                    g, aws_manifests[group], group, cfg["guest_user"], datetime.now(timezone.utc)))
 
     for status, msg in results:
         print(f"{status:4} {msg}")

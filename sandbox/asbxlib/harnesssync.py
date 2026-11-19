@@ -23,8 +23,8 @@ from typing import Any, Iterator, Optional
 from . import config
 from . import manifest
 from . import ui
+from .backend import RUNNING, Guest, SandboxBackend
 from .errors import AsbxError
-from .incus import Incus
 
 STATE_VERSION = 1
 TMP_SUFFIX = ".asbx-tmp"
@@ -140,8 +140,8 @@ def rewrite_home(text: str, host_home: str, guest_home: str) -> str:
     return re.sub(re.escape(host_home) + r"(?![\w.-])", lambda _m: guest_home, text)
 
 
-def _read_state(incus: Incus, instance: str, guest_user: str, state_path: str) -> list[str]:
-    proc = incus.exec_in(instance, ["cat", state_path], user=guest_user, check=False)
+def _read_state(g: Guest, guest_user: str, state_path: str) -> list[str]:
+    proc = g.exec(["cat", state_path], user=guest_user, check=False)
     if proc.returncode != 0:
         return []
     try:
@@ -169,17 +169,17 @@ def _chunks(items: list[str]) -> Iterator[list[str]]:
         yield chunk
 
 
-def _guest_state(incus: Incus, instance: str, guest_user: str, paths: list[str]) -> dict[str, tuple[str, str]]:
+def _guest_state(g: Guest, guest_user: str, paths: list[str]) -> dict[str, tuple[str, str]]:
     """{path: (sha256, octal mode)} for those of `paths` that exist in the guest."""
     digests: dict[str, str] = {}
     modes: dict[str, str] = {}
     for chunk in _chunks(paths):
-        proc = incus.exec_in(instance, ["sha256sum", *chunk], user=guest_user, check=False)
+        proc = g.exec(["sha256sum", *chunk], user=guest_user, check=False)
         for line in (proc.stdout or "").splitlines():
             digest, sep, path = line.partition("  ")
             if sep:
                 digests[path] = digest
-        proc = incus.exec_in(instance, ["stat", "-c", "%a %n", *chunk], user=guest_user, check=False)
+        proc = g.exec(["stat", "-c", "%a %n", *chunk], user=guest_user, check=False)
         for line in (proc.stdout or "").splitlines():
             mode, sep, path = line.partition(" ")
             if sep:
@@ -187,16 +187,16 @@ def _guest_state(incus: Incus, instance: str, guest_user: str, paths: list[str])
     return {p: (digests[p], modes[p]) for p in digests if p in modes}
 
 
-def push(incus: Incus, instance: str, guest_user: str, files: list[SyncFile]) -> int:
+def push(g: Guest, guest_user: str, files: list[SyncFile]) -> int:
     """Brings the guest's copies of `files` in line with the host's, pushing
     only those whose content or mode differ, then removes files the previous
     sync pushed that are no longer in `files`. Returns how many were pushed.
     The guest is compared directly rather than trusting a recorded hash, so a
     guest-side edit is overwritten, as the host is authoritative."""
-    uid = incus.uid_of(instance, guest_user)
+    uid = g.uid_of(guest_user)
     home = guest_home(guest_user)
     state_path = f"{home}/.asbx/harness-settings.json"
-    previous = _read_state(incus, instance, guest_user, state_path)
+    previous = _read_state(g, guest_user, state_path)
 
     host_home = str(Path.home())
     payloads: dict[str, tuple[SyncFile, bytes, bool]] = {}  # guest path -> (file, bytes, is_text)
@@ -211,63 +211,63 @@ def push(incus: Incus, instance: str, guest_user: str, files: list[SyncFile]) ->
         except UnicodeDecodeError:
             payloads[f.guest] = (f, raw, False)
 
-    in_guest = _guest_state(incus, instance, guest_user, list(payloads))
+    in_guest = _guest_state(g, guest_user, list(payloads))
     changed = [(f, data, text) for f, data, text in payloads.values()
                if in_guest.get(f.guest) != (hashlib.sha256(data).hexdigest(), f"{int(f.mode, 8):o}")]
 
     dirs = sorted({posixpath.dirname(f.guest) for f, _d, _t in changed} | {f"{home}/.asbx"})
     for chunk in _chunks(dirs):
-        incus.exec_in(instance, ["mkdir", "-p", *chunk], user=guest_user)
+        g.exec(["mkdir", "-p", *chunk], user=guest_user)
 
     moves = []
     for f, data, text in changed:
         tmp = f.guest + TMP_SUFFIX
         if text:
-            incus.push_text(instance, tmp, data.decode("utf-8"), mode=f.mode, uid=uid, gid=uid)
+            g.push_text(tmp, data.decode("utf-8"), mode=f.mode, uid=uid, gid=uid)
         else:
-            incus.file_push(instance, str(f.host), tmp, mode=f.mode, uid=uid, gid=uid)
+            g.push_file(str(f.host), tmp, mode=f.mode, uid=uid, gid=uid)
         moves.append(f"mv -f {shlex.quote(tmp)} {shlex.quote(f.guest)}")
     # Renames are batched to stay under the argument-size limit; omp's config
     # watcher still never sees a half-written file.
     for chunk in _chunks(moves):
-        incus.exec_in(instance, ["bash", "-c", " && ".join(chunk)], user=guest_user)
+        g.exec(["bash", "-c", " && ".join(chunk)], user=guest_user)
 
     # The state file is guest-writable, so only prune plain paths under the guest home.
     stale = sorted(p for p in set(previous) - set(payloads)
                    if p.startswith(home + "/") and posixpath.normpath(p) == p)
     for chunk in _chunks(stale):
-        incus.exec_in(instance, ["rm", "-f", *chunk], user=guest_user)
+        g.exec(["rm", "-f", *chunk], user=guest_user)
 
     state = json.dumps({"version": STATE_VERSION, "paths": list(payloads)}) + "\n"
-    incus.push_text(instance, state_path, state, mode="0644", uid=uid, gid=uid)
+    g.push_text(state_path, state, mode="0644", uid=uid, gid=uid)
     return len(changed)
 
 
-def sync_instance(incus: Incus, cfg: dict, m: manifest.Manifest) -> None:
+def sync_instance(g: Guest, cfg: dict, m: manifest.Manifest) -> None:
     files = files_for(cfg, m)
-    pushed = push(incus, m.instance, cfg["guest_user"], files)
+    pushed = push(g, cfg["guest_user"], files)
     ui.ok(f"{m.instance}: harness settings ({len(files)} files, {pushed} updated)")
 
 
-def cmd_settings_sync(incus: Incus, cfg: dict, group: Optional[str]) -> int:
+def cmd_settings_sync(backend: SandboxBackend, cfg: dict, group: Optional[str]) -> int:
     if group:
         targets = [manifest.load_manifest(group, cfg)]
     else:
         targets = []
-        for g, _instance in manifest.manifest_groups(cfg):
+        for name, _instance in manifest.manifest_groups(cfg):
             try:
-                targets.append(manifest.load_manifest(g, cfg))
+                targets.append(manifest.load_manifest(name, cfg))
             except AsbxError as e:
-                ui.warn(f"{g}: {e}")
+                ui.warn(f"{name}: {e}")
     failed = False
     for target in targets:
         instance = target.instance
-        state = incus.instance_state(instance) if incus.instance_exists(instance) else "absent"
-        if state != "Running":
+        state = backend.state(instance)
+        if state != RUNNING:
             ui.ok(f"{instance}: skipped ({state})")
             continue
         try:
-            sync_instance(incus, cfg, target)
+            sync_instance(backend.guest(instance), cfg, target)
         except AsbxError as e:
             ui.warn(f"{instance}: {e}")
             failed = True

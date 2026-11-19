@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import subprocess
 import tempfile
 from typing import Optional
 
 import yaml
 
+from .backend import runuser_argv
 from .errors import AsbxError
 
 
@@ -23,16 +23,19 @@ class Incus:
     def run(self, *args: str, check: bool = True, capture: bool = True,
             tty: bool = False, stdin: Optional[str] = None) -> subprocess.CompletedProcess:
         argv = ["incus", *args]
-        if tty:
-            proc = subprocess.run(argv, check=False)
-        else:
-            proc = subprocess.run(
-                argv,
-                check=False,
-                capture_output=capture,
-                text=True,
-                input=stdin,
-            )
+        try:
+            if tty:
+                proc = subprocess.run(argv, check=False)
+            else:
+                proc = subprocess.run(
+                    argv,
+                    check=False,
+                    capture_output=capture,
+                    text=True,
+                    input=stdin,
+                )
+        except FileNotFoundError:
+            raise AsbxError("incus not found on PATH; run 'asbx doctor'") from None
         if check and proc.returncode != 0:
             stderr = getattr(proc, "stderr", None) or ""
             raise AsbxError(f"command failed: {' '.join(argv)}\n{stderr.strip()}")
@@ -58,19 +61,8 @@ class Incus:
                 cmd += ["--env", f"{k}={v}"]
             cmd += ["--", *argv]
         else:
-            # incus exec --user <uid> alone leaves gid=0 with no supplementary
-            # groups (e.g. missing the docker group), so route non-root execs
-            # through runuser, which initializes the session normally. Default
-            # cwd to the user's home: an unset cwd otherwise inherits root's
-            # cwd, which the target user often cannot even stat.
-            effective_cwd = cwd or f"/home/{user}"
-            parts = [f"cd {shlex.quote(effective_cwd)} &&"]
-            env_prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in (env or {}).items())
-            if env_prefix:
-                parts.append(f"env {env_prefix}")
-            parts.append(" ".join(shlex.quote(a) for a in argv))
-            script = " ".join(parts)
-            cmd += ["--", "runuser", "-u", user, "--", "bash", "-c", script]
+            # incus exec --user <uid> alone leaves gid=0 with no supplementary groups.
+            cmd += ["--", *runuser_argv(argv, user, cwd, env)]
         return self.run(*cmd, tty=tty, check=check)
 
 
@@ -113,6 +105,17 @@ class Incus:
         if not data:
             return None
         return data[0]["status"]
+
+    def instance_names(self, prefix: str) -> list[str]:
+        """Names of the instances that start with `prefix`."""
+        proc = self.run("list", prefix, "--format", "json", check=False)
+        if proc.returncode != 0:
+            return []
+        try:
+            data = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            return []
+        return [n for n in (e.get("name", "") for e in data) if n.startswith(prefix)]
 
     def config_get(self, target: str, key: str) -> str:
         proc = self.run("config", "get", target, key, check=False)

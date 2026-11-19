@@ -1,6 +1,6 @@
-"""Host-side effects outside Incus: the single seam ``subprocess``/``os`` calls
-that touch the host (not a guest instance) go through, mirroring the rule that
-``Incus`` is the only place ``subprocess`` touches ``incus``.
+"""Host-side effects outside the VM service: the single seam ``subprocess``/``os``
+calls that touch the host (not a guest) go through, mirroring the rule that each
+backend's CLI wrapper is the only place ``subprocess`` touches that service.
 """
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -180,6 +181,32 @@ def wait_for_port(name: str, port: int, timeout: float = 120.0, interval: float 
             time.sleep(interval)
 
 
+def relay_tcp(name: str, port: int, stdin_fd: int = 0, stdout_fd: int = 1) -> None:
+    """Relays `stdin_fd`/`stdout_fd` (this process's stdin/stdout by default)
+    to `name:port` until the remote end closes; an ssh ProxyCommand."""
+    try:
+        sock = socket.create_connection((name, port), timeout=10)
+    except OSError as e:
+        raise AsbxError(f"cannot connect to {name}:{port}: {e}") from e
+    sock.settimeout(None)
+
+    def upstream() -> None:
+        try:
+            while data := os.read(stdin_fd, 65536):
+                sock.sendall(data)
+        except OSError:
+            pass
+        try:
+            sock.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+    threading.Thread(target=upstream, daemon=True).start()
+    with sock:
+        while data := sock.recv(65536):
+            os.write(stdout_fd, data)
+
+
 def forget_host_key(known_hosts: Path, hostname: str) -> None:
     known_hosts.parent.mkdir(parents=True, exist_ok=True)
     known_hosts.touch(exist_ok=True)
@@ -199,6 +226,22 @@ def write_private_text(path: Path, body: str) -> None:
     with os.fdopen(fd, "w") as f:
         f.write(body)
     os.chmod(path, 0o600)
+
+
+def write_atomic(path: Path, data: bytes, mode: int) -> None:
+    """Replaces `path` with `data` atomically, creating parent dirs, so a
+    reader never sees a half-written file. The temp copy is private until it
+    gets `mode`, just before the rename."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
 
 
 def exec_ssh(argv: list[str]) -> NoReturn:

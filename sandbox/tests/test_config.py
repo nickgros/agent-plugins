@@ -128,6 +128,14 @@ def test_load_config_rejects_unknown_shell(tmp_path, monkeypatch):
         config.load_config()
 
 
+def test_load_config_rejects_unknown_backend(tmp_path, monkeypatch):
+    monkeypatch.setenv(config.CONFIG_DIR_ENV, str(tmp_path))
+    (tmp_path / "config.yaml").write_text("backend: docker\n")
+
+    with pytest.raises(AsbxError, match="'backend' must be one of: auto, incus, tart"):
+        config.load_config()
+
+
 def test_load_config_accepts_default_tools_and_stringifies_versions(tmp_path, monkeypatch):
     monkeypatch.setenv(config.CONFIG_DIR_ENV, str(tmp_path))
     (tmp_path / "config.yaml").write_text("defaults:\n  tools:\n    maven: '3.9'\n    java: 21\n")

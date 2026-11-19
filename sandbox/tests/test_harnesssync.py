@@ -10,6 +10,7 @@ import pytest
 
 from asbxlib import harnesssync, manifest
 from asbxlib.errors import AsbxError
+from asbxlib.incusbackend import IncusBackend, IncusGuest
 from fake_incus import FakeIncus
 
 AGENT = "/home/agent/.omp/agent"
@@ -207,7 +208,7 @@ def _mv_scripts(fake: FakeIncus) -> list[str]:
 
 
 def _push(fake: FakeIncus, cfg, credentials=None) -> int:
-    return harnesssync.push(fake, "sandbox-a", "agent",
+    return harnesssync.push(IncusGuest(fake, "sandbox-a"), "agent",
                             harnesssync.files_for(cfg, _manifest(credentials=credentials)))
 
 
@@ -369,7 +370,7 @@ def test_settings_sync_skips_stopped_and_absent_instances(sync_env):
     fake = FakeIncus()
     _states(fake, stopped=("sandbox-a",), absent=("sandbox-b",))
 
-    assert harnesssync.cmd_settings_sync(fake, sync_env, None) == 0
+    assert harnesssync.cmd_settings_sync(IncusBackend(fake), sync_env, None) == 0
     assert _synced(fake) == set()
 
 
@@ -377,7 +378,7 @@ def test_settings_sync_without_group_syncs_every_running_manifest(sync_env):
     fake = FakeIncus()
     _states(fake, running=("sandbox-a", "sandbox-b"))
 
-    assert harnesssync.cmd_settings_sync(fake, sync_env, None) == 0
+    assert harnesssync.cmd_settings_sync(IncusBackend(fake), sync_env, None) == 0
     assert _synced(fake) == {"sandbox-a", "sandbox-b"}
 
 
@@ -385,13 +386,13 @@ def test_settings_sync_with_group_touches_only_that_group(sync_env):
     fake = FakeIncus()
     _states(fake, running=("sandbox-a", "sandbox-b"))
 
-    assert harnesssync.cmd_settings_sync(fake, sync_env, "b") == 0
+    assert harnesssync.cmd_settings_sync(IncusBackend(fake), sync_env, "b") == 0
     assert _synced(fake) == {"sandbox-b"}
 
 
 def test_settings_sync_unknown_group_raises(sync_env):
     with pytest.raises(AsbxError, match="no manifest at"):
-        harnesssync.cmd_settings_sync(FakeIncus(), sync_env, "nope")
+        harnesssync.cmd_settings_sync(IncusBackend(FakeIncus()), sync_env, "nope")
 
 
 def test_settings_sync_warns_and_continues_when_a_manifest_fails_to_load(sync_env, config_root, capsys):
@@ -399,7 +400,7 @@ def test_settings_sync_warns_and_continues_when_a_manifest_fails_to_load(sync_en
     fake = FakeIncus()
     _states(fake, running=("sandbox-b",))
 
-    assert harnesssync.cmd_settings_sync(fake, sync_env, None) == 0
+    assert harnesssync.cmd_settings_sync(IncusBackend(fake), sync_env, None) == 0
 
     assert "bogus_key" in capsys.readouterr().err
     assert _synced(fake) == {"sandbox-b"}
@@ -412,7 +413,7 @@ def test_settings_sync_failed_target_returns_1_and_others_still_sync(sync_env, h
     fake = FakeIncus()
     _states(fake, running=("sandbox-a", "sandbox-b"))
 
-    assert harnesssync.cmd_settings_sync(fake, sync_env, None) == 1
+    assert harnesssync.cmd_settings_sync(IncusBackend(fake), sync_env, None) == 1
 
     assert _synced(fake) == {"sandbox-b"}
 

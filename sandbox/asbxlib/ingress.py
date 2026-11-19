@@ -7,16 +7,17 @@ from __future__ import annotations
 import copy
 import ipaddress
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import TYPE_CHECKING, NamedTuple, Optional
 
 import yaml
 
 from .errors import AsbxError
-from .incus import Incus
 from . import config
 from . import host
-from . import netacl
 from . import ui
+
+if TYPE_CHECKING:
+    from .incusbackend import IncusBackend   # which imports this module
 
 FIREWALL_PATH = "/etc/asbx/firewall.nft"
 UNIT_NAME = "asbx-firewall.service"
@@ -346,7 +347,7 @@ def _set_ingress(cfg: dict, keys: tuple[str, ...], value, print_only: bool) -> d
     return cfg
 
 
-def cmd_ingress_setup(incus: Incus, cfg: dict, create: bool, adopt: Optional[str],
+def cmd_ingress_setup(backend: IncusBackend, cfg: dict, create: bool, adopt: Optional[str],
                       print_only: bool, yes: bool) -> None:
     if adopt is not None:
         name = adopt
@@ -375,7 +376,7 @@ def cmd_ingress_setup(incus: Incus, cfg: dict, create: bool, adopt: Optional[str
             _require_wireguard_tools()
         wg = cfg["network"]["ingress"]["wireguard"]
         tunnel = ipaddress.IPv4Interface(wg["address"]).network
-        if tunnel.overlaps(netacl.bridge_subnet(incus, cfg)):
+        if tunnel.overlaps(backend.bridge_subnet(cfg)):
             raise AsbxError(f"network.ingress.wireguard.address {wg['address']} overlaps the "
                             f"{cfg['network']['name']} subnet; pick another range")
         if not wg["enabled"]:
@@ -384,7 +385,7 @@ def cmd_ingress_setup(incus: Incus, cfg: dict, create: bool, adopt: Optional[str
     install(cfg, yes=yes, print_only=print_only)
 
 
-def cmd_client_config(incus: Incus, cfg: dict, name: str) -> None:
+def cmd_client_config(backend: IncusBackend, cfg: dict, name: str) -> None:
     wg = cfg["network"]["ingress"]["wireguard"]
     if not wg["enabled"]:
         raise AsbxError("managed WireGuard is off; run 'asbx ingress setup --create' first")
@@ -397,4 +398,4 @@ def cmd_client_config(incus: Incus, cfg: dict, name: str) -> None:
     key = _host_private_key(create=False)
     if key is None:
         raise AsbxError(f"no host WireGuard key at {wireguard_key_path()}; run 'asbx ingress setup --create'")
-    print(render_client(cfg, name, host.wg_pubkey(key), str(netacl.bridge_subnet(incus, cfg))), end="")
+    print(render_client(cfg, name, host.wg_pubkey(key), str(backend.bridge_subnet(cfg))), end="")

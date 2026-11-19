@@ -6,24 +6,31 @@ import re
 import pytest
 
 from fake_incus import FakeIncus
+from fake_tart import FakeLaunchctl
 
-from asbxlib import doctor, ingress
+from asbxlib import awscreds, doctor, incusbackend, ingress, launchd
+from asbxlib.incusbackend import IncusBackend, IncusGuest
 
 REAL_FIREWALL_OPTED_IN = ingress.firewall_opted_in
 
 
 @pytest.fixture
-def doctor_env(monkeypatch):
+def doctor_env(monkeypatch, cfg, tmp_path):
     """Pins the host-dependent probes doctor makes so a run depends only on
     the FakeIncus script, not on the machine's kvm, keys, or resolver."""
     monkeypatch.setattr(doctor.host, "which", lambda name: True)
+    monkeypatch.setattr(incusbackend.os, "access", lambda path, mode: True)   # /dev/kvm
+    key = tmp_path / "id_ed25519"
+    key.write_text("k")
+    (tmp_path / "id_ed25519.pub").write_text("p")
+    cfg["ssh"]["key"] = str(key)
     monkeypatch.setattr(doctor.host, "resolves", lambda name: True)
     monkeypatch.setattr(doctor.manifest_mod, "manifest_groups", lambda cfg: [("demo", "sandbox-demo")])
-    monkeypatch.setattr(doctor.netacl, "acl_matches_config", lambda incus, cfg: True)
-    monkeypatch.setattr(doctor.ingress, "interface_problems", lambda cfg: {})
-    monkeypatch.setattr(doctor.ingress, "firewall_installed_matches", lambda cfg: True)
-    monkeypatch.setattr(doctor.ingress, "firewall_unit_active", lambda: True)
-    monkeypatch.setattr(doctor.ingress, "firewall_opted_in", lambda cfg: True)
+    monkeypatch.setattr(incusbackend.netacl, "acl_matches_config", lambda incus, cfg: True)
+    monkeypatch.setattr(ingress, "interface_problems", lambda cfg: {})
+    monkeypatch.setattr(ingress, "firewall_installed_matches", lambda cfg: True)
+    monkeypatch.setattr(ingress, "firewall_unit_active", lambda: True)
+    monkeypatch.setattr(ingress, "firewall_opted_in", lambda cfg: True)
 
 
 def _incus(cfg, *, state="Running", version="7.0.0", egress_mode="acl", eth0=None):
@@ -41,7 +48,7 @@ def _incus(cfg, *, state="Running", version="7.0.0", egress_mode="acl", eth0=Non
 def test_cmd_doctor_missing_config_returns_1_and_reports_fail(monkeypatch, capsys):
     monkeypatch.setattr(doctor.host, "which", lambda name: True)
 
-    rc = doctor.cmd_doctor(FakeIncus(), None, fix=False)
+    rc = doctor.cmd_doctor(IncusBackend(FakeIncus()), None, fix=False)
 
     assert rc == 1
     out = capsys.readouterr().out
@@ -53,7 +60,7 @@ def test_cmd_doctor_reports_network_checks_for_running_instance(doctor_env, caps
     fake.stub("ip", "-4", "route", "show", "default", stdout="default via 10.210.86.1 dev enp5s0\n")
     fake.stub("dev/tcp", rc=0)
 
-    doctor.cmd_doctor(fake, cfg, fix=False)
+    doctor.cmd_doctor(IncusBackend(fake), cfg, fix=False)
 
     out = capsys.readouterr().out
     assert "PASS sandbox-demo: guest has IPv4 default route" in out
@@ -64,7 +71,7 @@ def test_cmd_doctor_fails_route_check_and_skips_egress_check_when_no_default_rou
     fake = _incus(cfg)
     fake.stub("ip", "-4", "route", "show", "default", stdout="")
 
-    rc = doctor.cmd_doctor(fake, cfg, fix=False)
+    rc = doctor.cmd_doctor(IncusBackend(fake), cfg, fix=False)
 
     out = capsys.readouterr().out
     assert rc == 1
@@ -73,7 +80,7 @@ def test_cmd_doctor_fails_route_check_and_skips_egress_check_when_no_default_rou
 
 
 def test_cmd_doctor_skips_network_checks_for_stopped_instance(doctor_env, capsys, cfg):
-    doctor.cmd_doctor(_incus(cfg, state="Stopped"), cfg, fix=False)
+    doctor.cmd_doctor(IncusBackend(_incus(cfg, state="Stopped")), cfg, fix=False)
 
     out = capsys.readouterr().out
     assert "guest has IPv4 default route" not in out
@@ -85,7 +92,7 @@ def test_cmd_doctor_fails_when_running_instance_name_does_not_resolve(doctor_env
     fake = _incus(cfg)
     fake.stub("ip", "-4", "route", "show", "default", stdout="default via 10.210.86.1 dev enp5s0\n")
 
-    rc = doctor.cmd_doctor(fake, cfg, fix=False)
+    rc = doctor.cmd_doctor(IncusBackend(fake), cfg, fix=False)
 
     out = capsys.readouterr().out
     assert rc == 1
@@ -95,7 +102,7 @@ def test_cmd_doctor_fails_when_running_instance_name_does_not_resolve(doctor_env
 
 @pytest.mark.parametrize("egress_mode", ["guest-nft", ""])
 def test_cmd_doctor_fails_instance_without_an_attached_acl(doctor_env, capsys, cfg, egress_mode):
-    rc = doctor.cmd_doctor(_incus(cfg, state="Stopped", egress_mode=egress_mode), cfg, fix=False)
+    rc = doctor.cmd_doctor(IncusBackend(_incus(cfg, state="Stopped", egress_mode=egress_mode)), cfg, fix=False)
 
     out = capsys.readouterr().out
     assert rc == 1
@@ -103,13 +110,13 @@ def test_cmd_doctor_fails_instance_without_an_attached_acl(doctor_env, capsys, c
 
 
 def test_cmd_doctor_passes_instance_with_an_attached_acl(doctor_env, capsys, cfg):
-    doctor.cmd_doctor(_incus(cfg, state="Stopped"), cfg, fix=False)
+    doctor.cmd_doctor(IncusBackend(_incus(cfg, state="Stopped")), cfg, fix=False)
 
     assert "PASS sandbox-demo: egress ACL attached" in capsys.readouterr().out
 
 
 def test_cmd_doctor_fails_when_incus_is_too_old_for_bridged_nic_acls(doctor_env, capsys, cfg):
-    rc = doctor.cmd_doctor(_incus(cfg, state="Stopped", version="6.0.0"), cfg, fix=False)
+    rc = doctor.cmd_doctor(IncusBackend(_incus(cfg, state="Stopped", version="6.0.0")), cfg, fix=False)
 
     out = capsys.readouterr().out
     assert rc == 1
@@ -118,9 +125,9 @@ def test_cmd_doctor_fails_when_incus_is_too_old_for_bridged_nic_acls(doctor_env,
 
 
 def test_cmd_doctor_fails_when_the_ingress_firewall_is_not_loaded(doctor_env, monkeypatch, capsys, cfg):
-    monkeypatch.setattr(doctor.ingress, "firewall_unit_active", lambda: False)
+    monkeypatch.setattr(ingress, "firewall_unit_active", lambda: False)
 
-    rc = doctor.cmd_doctor(_incus(cfg, state="Stopped"), cfg, fix=False)
+    rc = doctor.cmd_doctor(IncusBackend(_incus(cfg, state="Stopped")), cfg, fix=False)
 
     out = capsys.readouterr().out
     assert rc == 1
@@ -130,14 +137,14 @@ def test_cmd_doctor_fails_when_the_ingress_firewall_is_not_loaded(doctor_env, mo
 def test_cmd_doctor_passes_and_fix_never_installs_on_a_host_that_never_opted_in(
         doctor_env, monkeypatch, capsys, cfg):
     # The real opt-in check: no ingress interfaces in cfg and no installed file.
-    monkeypatch.setattr(doctor.ingress, "firewall_opted_in", REAL_FIREWALL_OPTED_IN)
-    monkeypatch.setattr(doctor.ingress.host, "path_exists", lambda path: False)
-    monkeypatch.setattr(doctor.ingress, "firewall_unit_active", lambda: False)
+    monkeypatch.setattr(ingress, "firewall_opted_in", REAL_FIREWALL_OPTED_IN)
+    monkeypatch.setattr(ingress.host, "path_exists", lambda path: False)
+    monkeypatch.setattr(ingress, "firewall_unit_active", lambda: False)
     installs: list = []
-    monkeypatch.setattr(doctor.ingress, "install", lambda *a, **k: installs.append(a))
-    monkeypatch.setattr(doctor.netacl, "ensure_acl", lambda incus, cfg: None)
+    monkeypatch.setattr(ingress, "install", lambda *a, **k: installs.append(a))
+    monkeypatch.setattr(incusbackend.netacl, "ensure_acl", lambda incus, cfg: None)
 
-    rc = doctor.cmd_doctor(_incus(cfg, state="Stopped"), cfg, fix=True)
+    rc = doctor.cmd_doctor(IncusBackend(_incus(cfg, state="Stopped")), cfg, fix=True)
 
     out = capsys.readouterr().out
     assert rc == 0
@@ -146,9 +153,9 @@ def test_cmd_doctor_passes_and_fix_never_installs_on_a_host_that_never_opted_in(
 
 
 def test_cmd_doctor_only_warns_about_an_ineligible_ingress_interface(doctor_env, monkeypatch, capsys, cfg):
-    monkeypatch.setattr(doctor.ingress, "interface_problems", lambda cfg: {"enp5s0": "is a bridge"})
+    monkeypatch.setattr(ingress, "interface_problems", lambda cfg: {"enp5s0": "is a bridge"})
 
-    rc = doctor.cmd_doctor(_incus(cfg, state="Stopped"), cfg, fix=False)
+    rc = doctor.cmd_doctor(IncusBackend(_incus(cfg, state="Stopped")), cfg, fix=False)
 
     out = capsys.readouterr().out
     assert rc == 0
@@ -158,7 +165,7 @@ def test_cmd_doctor_only_warns_about_an_ineligible_ingress_interface(doctor_env,
 def test_cmd_doctor_fails_an_instance_whose_nic_is_not_pinned_and_filtered(doctor_env, capsys, cfg):
     fake = _incus(cfg, state="Stopped", eth0={"ipv4.address": "10.210.86.192"})
 
-    rc = doctor.cmd_doctor(fake, cfg, fix=False)
+    rc = doctor.cmd_doctor(IncusBackend(fake), cfg, fix=False)
 
     out = capsys.readouterr().out
     assert rc == 1
@@ -185,6 +192,7 @@ def _creds_body(minutes: int) -> str:
 def aws_env(doctor_env, monkeypatch):
     import subprocess
     monkeypatch.setattr(doctor.manifest_mod, "load_manifest", lambda g, cfg: _aws_manifest())
+    monkeypatch.setattr(awscreds.sys, "platform", "linux")   # systemd units, not the LaunchAgent
     monkeypatch.setattr(doctor.host, "systemctl_user",
                         lambda *a: subprocess.CompletedProcess([], 0, stdout="active", stderr=""))
 
@@ -200,7 +208,7 @@ def _aws_incus(cfg, **creds_stub):
 def test_cmd_doctor_reports_timer_and_fresh_credentials(aws_env, capsys, cfg):
     cmd = _aws_incus(cfg, stdout=_creds_body(60))
 
-    doctor.cmd_doctor(cmd, cfg, fix=False)
+    doctor.cmd_doctor(IncusBackend(cmd), cfg, fix=False)
 
     out = capsys.readouterr().out
     assert "PASS asbx-aws-refresh.timer active" in out
@@ -217,8 +225,7 @@ def test_aws_credential_results_use_the_given_clock_and_report_each_profile():
     fake.stub("cat", "/home/agent/.asbx/aws/soon.json", stdout=body)
     fake.stub("cat", "/home/agent/.asbx/aws/gone.json", rc=1)
 
-    results = doctor.aws_credential_results(
-        fake, _aws_manifest(profiles=["soon", "gone"]), "demo", "agent", now)
+    results = doctor.aws_credential_results(IncusGuest(fake, "sandbox-demo"), _aws_manifest(profiles=["soon", "gone"]), "demo", "agent", now)
 
     assert results[0][0] == "WARN" and "aws profile soon: expires in 5 min" in results[0][1]
     assert results[1][0] == "FAIL" and "aws profile gone: missing" in results[1][1]
@@ -227,7 +234,7 @@ def test_aws_credential_results_use_the_given_clock_and_report_each_profile():
 def test_cmd_doctor_flags_expired_credentials_with_remedy(aws_env, capsys, cfg):
     cmd = _aws_incus(cfg, stdout=_creds_body(-5))
 
-    rc = doctor.cmd_doctor(cmd, cfg, fix=False)
+    rc = doctor.cmd_doctor(IncusBackend(cmd), cfg, fix=False)
 
     out = capsys.readouterr().out
     assert rc == 1
@@ -238,7 +245,7 @@ def test_cmd_doctor_flags_expired_credentials_with_remedy(aws_env, capsys, cfg):
 def test_cmd_doctor_flags_missing_credential_file(aws_env, capsys, cfg):
     cmd = _aws_incus(cfg, rc=1, stderr="No such file")
 
-    rc = doctor.cmd_doctor(cmd, cfg, fix=False)
+    rc = doctor.cmd_doctor(IncusBackend(cmd), cfg, fix=False)
 
     assert rc == 1
     assert "FAIL sandbox-demo: aws profile p: missing" in capsys.readouterr().out
@@ -249,7 +256,7 @@ def test_cmd_doctor_warns_when_timer_inactive(aws_env, monkeypatch, capsys, cfg)
     monkeypatch.setattr(doctor.host, "systemctl_user",
                         lambda *a: subprocess.CompletedProcess([], 3, stdout="inactive", stderr=""))
 
-    doctor.cmd_doctor(_aws_incus(cfg, stdout=_creds_body(60)), cfg, fix=False)
+    doctor.cmd_doctor(IncusBackend(_aws_incus(cfg, stdout=_creds_body(60))), cfg, fix=False)
 
     assert "WARN asbx-aws-refresh.timer active" in capsys.readouterr().out
 
@@ -261,18 +268,35 @@ def test_cmd_doctor_warns_only_for_the_inactive_path_unit(aws_env, monkeypatch, 
         lambda _is_active, unit: subprocess.CompletedProcess([], 0 if unit.endswith(".timer") else 3,
                                                              stdout="", stderr=""))
 
-    doctor.cmd_doctor(_aws_incus(cfg, stdout=_creds_body(60)), cfg, fix=False)
+    doctor.cmd_doctor(IncusBackend(_aws_incus(cfg, stdout=_creds_body(60))), cfg, fix=False)
 
     out = capsys.readouterr().out
     assert "PASS asbx-aws-refresh.timer active" in out
     assert "WARN asbx-aws-refresh.path active" in out
 
 
+def test_cmd_doctor_on_macos_checks_the_refresh_launch_agent(aws_env, monkeypatch, capsys, cfg):
+    launchctl = FakeLaunchctl()
+    monkeypatch.setattr(launchd, "run_launchctl", launchctl)
+    monkeypatch.setattr(awscreds.sys, "platform", "darwin")
+    backend = IncusBackend(_aws_incus(cfg, stdout=_creds_body(60)))
+
+    doctor.cmd_doctor(backend, cfg, fix=False)
+    assert ("WARN LaunchAgent com.asbx.aws-refresh loaded: run 'asbx aws-refresh --install-timer'"
+            in capsys.readouterr().out)
+
+    launchctl.loaded["com.asbx.aws-refresh"] = b""
+    doctor.cmd_doctor(backend, cfg, fix=False)
+    out = capsys.readouterr().out
+    assert "PASS LaunchAgent com.asbx.aws-refresh loaded\n" in out
+    assert "asbx-aws-refresh.timer" not in out
+
+
 def test_cmd_doctor_skips_aws_checks_without_aws_creds_provider(doctor_env, monkeypatch, capsys, cfg):
     monkeypatch.setattr(doctor.manifest_mod, "load_manifest",
                         lambda g, c: _aws_manifest(auth=["github-gh"]))
 
-    doctor.cmd_doctor(_aws_incus(cfg), cfg, fix=False)
+    doctor.cmd_doctor(IncusBackend(_aws_incus(cfg)), cfg, fix=False)
 
     out = capsys.readouterr().out
     assert "aws" not in out.replace("sandbox-demo", "")
