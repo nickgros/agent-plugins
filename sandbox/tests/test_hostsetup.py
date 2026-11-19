@@ -53,6 +53,33 @@ def test_cmd_init_writes_a_private_config_and_does_not_overwrite_it(home, monkey
     assert path.read_text() == "guest_user: kept\n"
 
 
+@pytest.mark.parametrize("acl_fails", [False, True])
+def test_cmd_init_refreshes_the_acl_even_when_the_ingress_firewall_check_fails(home, monkeypatch, capsys, acl_fails):
+    monkeypatch.setitem(config.DEFAULT_CONFIG["ssh"], "key", str(home / "key"))
+    monkeypatch.setitem(config.DEFAULT_CONFIG["ssh"], "config_dir", str(home / "confd"))
+    acls: list = []
+
+    def ensure_acl(incus, cfg):
+        acls.append(cfg["network"]["acl"])
+        if acl_fails:
+            raise AsbxError("bridge missing")
+
+    def require_firewall(cfg):
+        raise AsbxError("ingress firewall unit inactive")
+
+    monkeypatch.setattr(incusbackend.netacl, "ensure_acl", ensure_acl)
+    monkeypatch.setattr(incusbackend.ingress, "require_firewall", require_firewall)
+    monkeypatch.setattr(hostsetup.sshconf, "ensure_ssh_include", lambda cfg: None)
+
+    hostsetup.cmd_init(IncusBackend(FakeIncus()))
+
+    assert acls == ["asbx-egress"]
+    err = capsys.readouterr().err
+    assert "ingress firewall unit inactive" in err
+    assert ("could not refresh network ACL: bridge missing" in err) == acl_fails
+    assert config.config_path().exists()
+
+
 def test_cmd_install_refuses_to_replace_an_existing_link_without_force(home):
     hostsetup.cmd_install(force=False)
     target = home / ".local" / "bin" / "asbx"

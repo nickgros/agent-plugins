@@ -12,12 +12,18 @@ from . import manifest as manifest_mod
 from . import ui
 
 
+def proxy_command_line(command: str) -> str:
+    """A ProxyCommand line; ssh expands `%` tokens in it, so a literal `%` in a
+    path is written `%%`."""
+    return f"    ProxyCommand {command.replace('%', '%%')}\n"
+
+
 def render_ssh_config_block(instance: str, route: SshRoute, ssh_key: str, known_hosts: str,
                             guest_user: str) -> str:
     """The host's stanza. `HostKeyAlias` keeps the known-hosts entry stable
     when the route is a ProxyCommand or the address changes."""
     reach = (f"    HostName {route.hostname}\n" if route.hostname
-             else f"    ProxyCommand {route.proxy_command}\n")
+             else proxy_command_line(route.proxy_command))
     return (
         f"# managed by asbx — do not edit\n"
         f"Host {instance}\n"
@@ -45,9 +51,10 @@ def render_remote_stanza(instance: str, route: SshRoute, guest_user: str, jump: 
                  + (f"    ProxyJump {jump}\n" if jump else ""))
     else:
         # Quoted once for the local shell that runs ProxyCommand, so the jump
-        # host's shell gets the route's own quoting intact.
-        reach = (f"    ProxyCommand ssh {shlex.quote(jump)} {shlex.quote(route.proxy_command)}\n"
-                 f"    User {guest_user}\n")
+        # host's shell gets the route's own quoting intact. `-T`: the byte
+        # stream must not get a tty, whatever RequestTTY says.
+        reach = (proxy_command_line(f"ssh -T {shlex.quote(jump)} {shlex.quote(route.proxy_command)}")
+                 + f"    User {guest_user}\n")
     return (
         f"Host {instance}\n"
         + reach
@@ -66,6 +73,11 @@ def cmd_ssh_config(backend: SandboxBackend, cfg: dict, group: str, jump: Optiona
     instance = manifest_mod.load_manifest(group, cfg).instance
     if jump:
         route = backend.ssh_route(cfg, instance)
+        if route.proxy_command and ("," in jump or ":" in jump):
+            raise AsbxError(f"--jump {jump}: the {backend.name} backend runs its ProxyCommand "
+                            "over a plain 'ssh USER@HOST', so a ':port' or a comma-separated "
+                            "hop list does not work; use a Host alias from the other "
+                            "machine's ~/.ssh/config instead")
     else:
         pinned = backend.pinned_ipv4(instance) if backend.state(instance) != ABSENT else None
         if not pinned:

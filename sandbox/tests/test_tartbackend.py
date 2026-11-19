@@ -130,6 +130,7 @@ def test_softnet_guard_rejects_and_prints_the_fix(entries, why):
     assert msg.startswith(why)
     assert "sudo install -d -o root -g wheel -m 0755 /opt/sn\n" in msg
     assert 'sudo install -o root -g wheel -m 4555 "$(brew --prefix softnet)/bin/softnet" /opt/sn/softnet' in msg
+    assert "After 'brew install openai/tools/tart', which brings Softnet, install it with:\n" in msg
 
 
 def test_softnet_guard_rejects_a_relative_dir():
@@ -423,6 +424,31 @@ def test_start_refuses_a_vm_running_outside_asbx(env, tcfg):
     assert not any(call[0] == "bootstrap" for call in env.launchctl.calls)
 
 
+def test_start_refuses_a_vm_run_by_hand_after_its_job_exited(env, tcfg):
+    """When the guest powers itself off, `tart run` exits cleanly and the
+    job stays loaded with no process; a `tart run` by hand then runs the VM
+    without the job's egress rules."""
+    created(env, tcfg, make_spec())
+    env.backend.start(tcfg, make_spec())
+    env.tart.set_state("sandbox-x", "stopped")   # the guest powers itself off
+    env.tart.set_state("sandbox-x", "running")   # `tart run sandbox-x` by hand
+    assert "com.asbx.vm.sandbox-x" in env.launchctl.loaded
+    with pytest.raises(AsbxError, match="running outside asbx"):
+        env.backend.start(tcfg, make_spec())
+    assert len(env.launchctl.bootstrapped) == 1
+
+
+def test_start_boots_again_a_vm_whose_guest_powered_itself_off(env, tcfg):
+    created(env, tcfg, make_spec())
+    env.backend.start(tcfg, make_spec())
+    env.tart.set_state("sandbox-x", "stopped")   # the guest powers itself off; the job stays loaded
+    assert env.backend.state("sandbox-x") == STOPPED
+    env.backend.start(tcfg, make_spec())
+    assert len(env.launchctl.bootstrapped) == 2
+    assert env.backend.state("sandbox-x") == RUNNING
+    assert launchd.job_running("com.asbx.vm.sandbox-x")
+
+
 def test_start_absent_raises(env, tcfg):
     with pytest.raises(AsbxError, match="does not exist"):
         env.backend.start(tcfg, make_spec())
@@ -516,15 +542,60 @@ def test_stop_powers_the_guest_off_then_unloads_its_job(env, tcfg):
     assert not env.launchctl.loaded
 
 
-def test_stop_forces_off_a_guest_that_ignores_poweroff(env, tcfg, monkeypatch):
+@pytest.fixture
+def fake_clock(monkeypatch):
+    """Every `time.monotonic()` is 10s after the last, so poweroff waits run out."""
+    clock = iter(range(0, 10_000, 10))
+    monkeypatch.setattr(tartbackend.time, "monotonic", lambda: next(clock))
+
+
+def test_stop_forces_off_a_guest_that_ignores_poweroff(env, tcfg, fake_clock):
     created(env, tcfg, make_spec())
     env.backend.start(tcfg, make_spec())
     env.tart.ignore_poweroff = True
-    clock = iter(range(0, 10_000, 10))
-    monkeypatch.setattr(tartbackend.time, "monotonic", lambda: next(clock))
     env.backend.stop("sandbox-x")
     assert env.tart.index("tart", "exec", "sandbox-x", "systemctl\npoweroff") < env.tart.index("tart", "stop", "sandbox-x")
     assert env.backend.state("sandbox-x") == STOPPED
+
+
+def test_stop_bounds_the_poweroff_request_to_an_agent_that_never_answers(env, tcfg, fake_clock):
+    """The agent is guest-controlled: one that accepts the exec and never
+    replies must not hang `stop`."""
+    created(env, tcfg, make_spec())
+    env.backend.start(tcfg, make_spec())
+    env.tart.hang("exec", "sandbox-x", "systemctl\npoweroff")
+    env.backend.stop("sandbox-x")
+    assert ["stop", "sandbox-x"] in env.tart.calls
+    assert env.backend.state("sandbox-x") == STOPPED
+    assert not env.launchctl.loaded
+
+
+def test_forced_stop_tolerates_a_guest_that_powers_off_just_before_it(env, tcfg, fake_clock):
+    """Real `tart stop` fails on a VM that has just stopped; the stop still
+    completes and unloads the job."""
+    created(env, tcfg, make_spec())
+    env.backend.start(tcfg, make_spec())
+    env.tart.ignore_poweroff = True
+
+    def runner(argv, **kwargs):
+        if argv[1] == "stop":
+            env.tart.set_state("sandbox-x", "stopped")   # the guest finishes powering off now
+        return env.tart(argv, **kwargs)
+
+    env.backend.tart = tart_mod.Tart(runner=runner, executable=EXECUTABLE)
+    env.backend.stop("sandbox-x")
+    assert ["stop", "sandbox-x"] in env.tart.calls
+    assert not env.launchctl.loaded
+
+
+def test_forced_stop_raises_when_the_vm_keeps_running(env, tcfg, fake_clock):
+    created(env, tcfg, make_spec())
+    env.backend.start(tcfg, make_spec())
+    env.tart.ignore_poweroff = True
+    env.tart.stub("stop", "sandbox-x", rc=1, stderr="lock busy")
+    with pytest.raises(AsbxError, match="tart stop sandbox-x\nlock busy"):
+        env.backend.stop("sandbox-x")
+    assert "com.asbx.vm.sandbox-x" in env.launchctl.loaded
 
 
 def test_restart_boots_from_a_fresh_job(env, tcfg):
@@ -555,6 +626,23 @@ def test_delete_removes_vm_snapshots_and_host_files_but_not_look_alikes(env, tcf
 def test_delete_absent_is_not_an_error(env):
     env.backend.delete("sandbox-gone")
     assert not any(call[0] == "delete" for call in env.tart.calls)
+
+
+def test_delete_never_waits_on_the_guest(env, tcfg):
+    """The disk is about to go, so `rm` forces the VM off: a guest that
+    stalls or ignores a poweroff can't hold it up."""
+    created(env, tcfg, make_spec())
+    env.backend.start(tcfg, make_spec())
+    env.tart.hang("exec")
+    before = len(env.tart.calls)
+    env.backend.delete("sandbox-x")
+    assert not any(call[0] == "exec" for call in env.tart.calls[before:])
+    events = env.tart.events
+    assert (events.index(["tart", "stop", "sandbox-x"])
+            < events.index(["launchctl", "bootout", f"gui/{os.getuid()}/com.asbx.vm.sandbox-x"])
+            < events.index(["tart", "delete", "sandbox-x"]))
+    assert "sandbox-x" not in env.tart.vms
+    assert not env.launchctl.loaded
 
 
 # ---------------------------------------------------------------------------
@@ -600,6 +688,20 @@ def test_snapshot_starts_the_vm_again_when_the_clone_fails(env, tcfg):
     assert env.backend.snapshots("sandbox-x") == []
 
 
+def test_snapshot_marks_its_clone_before_making_it(env, tcfg, monkeypatch):
+    """A clone without its `snapshot_of` mark would be hidden from
+    `snapshots` and never deleted with the sandbox."""
+    created(env, tcfg, make_spec())
+
+    def fail(vm, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tartbackend, "_write_state", fail)
+    with pytest.raises(OSError, match="disk full"):
+        env.backend.snapshot(tcfg, make_spec(), "a")
+    assert "sandbox-x-snap-a" not in env.tart.vms
+
+
 def test_snapshots_ignore_unmarked_look_alikes(env, tcfg):
     created(env, tcfg, make_spec())
     env.tart.add_vm("sandbox-x-snap-y")
@@ -626,13 +728,42 @@ def test_restore_replaces_the_vm_with_the_snapshot_and_boots_it(env, tcfg):
 
     env.backend.restore(tcfg, make_spec(), "a")
 
-    delete = env.tart.index("tart", "delete", "sandbox-x")
-    clone = env.tart.index("tart", "clone", "sandbox-x-snap-a", "sandbox-x")
-    assert env.tart.index("tart", "exec", "sandbox-x", "systemctl\npoweroff") < delete < clone < bootstraps(env)[-1]
+    events = env.tart.events
+    clone = events.index(["tart", "clone", "sandbox-x-snap-a", "sandbox-x-restoring"])
+    stop = events.index(["tart", "stop", "sandbox-x"])
+    delete = events.index(["tart", "delete", "sandbox-x"])
+    rename = events.index(["tart", "rename", "sandbox-x-restoring", "sandbox-x"])
+    assert clone < stop < delete < rename < bootstraps(env)[-1]
+    # Its state is being discarded, so the sandbox is forced off without asking the guest.
+    assert not any("poweroff" in event for event in events[clone:rename])
     assert env.backend.state("sandbox-x") == RUNNING
     assert env.backend.meta_get("sandbox-x", META_GROUP) == "then"
     assert env.backend.meta_get("sandbox-x", "snapshot_of") == ""
     assert env.backend.snapshots("sandbox-x") == ["a"]
+
+
+def test_restore_leaves_the_sandbox_alone_when_the_clone_fails(env, tcfg):
+    created(env, tcfg, make_spec())
+    env.backend.snapshot(tcfg, make_spec(), "a")
+    env.backend.start(tcfg, make_spec())
+    env.tart.stub("clone", "sandbox-x-snap-a", "sandbox-x-restoring", rc=1)
+    with pytest.raises(AsbxError, match="tart clone sandbox-x-snap-a sandbox-x-restoring"):
+        env.backend.restore(tcfg, make_spec(), "a")
+    assert env.backend.state("sandbox-x") == RUNNING
+    assert "com.asbx.vm.sandbox-x" in env.launchctl.loaded
+    assert not any(call[0] in ("stop", "delete") for call in env.tart.calls)
+
+
+def test_restore_refuses_when_its_staging_name_is_taken(env, tcfg):
+    """`<instance>-restoring` may be another sandbox, so it is never deleted."""
+    created(env, tcfg, make_spec())
+    env.backend.snapshot(tcfg, make_spec(), "a")
+    env.tart.add_vm("sandbox-x-restoring")
+    before = len(env.tart.calls)
+    with pytest.raises(AsbxError, match="tart delete sandbox-x-restoring"):
+        env.backend.restore(tcfg, make_spec(), "a")
+    assert {call[0] for call in env.tart.calls[before:]} == {"list"}
+    assert {"sandbox-x", "sandbox-x-restoring"} <= set(env.tart.vms)
 
 
 # ---------------------------------------------------------------------------
@@ -723,6 +854,30 @@ def test_build_base_refuses_a_leftover_build_vm(env, tcfg):
     with pytest.raises(AsbxError, match="tart delete asbx-base-build"):
         env.backend.build_base(tcfg, lambda g: None)
     assert not any(call[0] == "clone" for call in env.tart.calls)
+
+
+def test_build_base_refuses_to_publish_a_build_vm_that_had_to_be_forced_off(env, tcfg, fake_clock):
+    """Forced off, the guest may not have written back the build's last
+    changes, such as the final cleanup."""
+    env.tart.stub("exec", "id -u", stdout="0\n")
+
+    def prepare(g):
+        env.tart.ignore_poweroff = True
+
+    with pytest.raises(AsbxError, match="did not power off by itself.*tart delete asbx-base-build"):
+        env.backend.build_base(tcfg, prepare)
+    assert ["stop", BASE_BUILD_VM] in env.tart.calls
+    assert not any(call[0] == "rename" for call in env.tart.calls)
+    assert tcfg["image_alias"] not in env.tart.vms
+    assert env.tart.vms[BASE_BUILD_VM]["State"] == "stopped"
+    assert not env.launchctl.loaded
+
+
+def test_build_base_resize_failure_names_the_cleanup(env, tcfg):
+    env.tart.stub("set", BASE_BUILD_VM, rc=1, stderr="bad size")
+    with pytest.raises(AsbxError, match="bad size; delete the VM before retrying: tart delete asbx-base-build"):
+        env.backend.build_base(tcfg, lambda g: pytest.fail("prepared after a failed resize"))
+    assert not env.launchctl.bootstrapped
 
 
 def test_build_base_refuses_an_unsafe_softnet_before_cloning(env, tcfg):

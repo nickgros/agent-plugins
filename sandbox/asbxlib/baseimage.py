@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-import platform
 import urllib.error
 import urllib.request
-from typing import Optional
 
 from . import config, guest, ui
 from .backend import Guest, SandboxBackend
@@ -22,22 +20,14 @@ NODE_PINNED_SHA256 = {
     "arm64": "5f4ddab610c1ab2016b3c227cebdbf6d9495161487e4739c7b90090595f465f7",
 }
 
-_NODE_ARCH = {"x86_64": "x64", "amd64": "x64", "arm64": "arm64", "aarch64": "arm64"}
+# `dpkg --print-architecture` in the guest -> Node's tarball arch.
+NODE_DPKG_ARCH = {"amd64": "x64", "arm64": "arm64"}
 
 
-def node_arch(machine: str) -> str:
-    """Node's tarball arch for a host `platform.machine()`. Guests run the
-    host's architecture (no emulation), so the host decides."""
-    arch = _NODE_ARCH.get(machine.lower())
-    if arch is None:
-        raise AsbxError(f"unsupported host architecture {machine!r}; asbx supports x86_64 and arm64")
-    return arch
-
-
-def resolve_node_download(arch: Optional[str] = None, fetch_json=None, fetch_text=None) -> tuple[str, str]:
-    """Returns (tarball_url, sha256) for `arch` (default: the host's). Falls
-    back to the pinned pair on any network failure."""
-    arch = arch or node_arch(platform.machine())
+def resolve_node_downloads(fetch_json=None, fetch_text=None) -> dict[str, tuple[str, str]]:
+    """Returns {tarball arch: (url, sha256)} for every arch in
+    NODE_DPKG_ARCH; the recipe picks one by the guest's own architecture.
+    Falls back to the pinned pairs on any network failure."""
     if fetch_json is None:
         def fetch_json():
             with urllib.request.urlopen("https://nodejs.org/dist/index.json", timeout=10) as r:
@@ -56,22 +46,24 @@ def resolve_node_download(arch: Optional[str] = None, fetch_json=None, fetch_tex
                 break
         if version is None:
             raise ValueError("no LTS entry found in index.json")
-        tarball_name = f"node-{version}-linux-{arch}.tar.xz"
         shasums = fetch_text(f"https://nodejs.org/dist/{version}/SHASUMS256.txt")
-        sha256 = None
-        for line in shasums.splitlines():
-            if line.strip().endswith(tarball_name):
-                sha256 = line.split()[0]
-                break
-        if sha256 is None:
-            raise ValueError(f"no sha256 for {tarball_name} in SHASUMS256.txt")
-        url = f"https://nodejs.org/dist/{version}/{tarball_name}"
-        return url, sha256
+        downloads = {}
+        for arch in NODE_DPKG_ARCH.values():
+            tarball_name = f"node-{version}-linux-{arch}.tar.xz"
+            sha256 = None
+            for line in shasums.splitlines():
+                if line.strip().endswith(tarball_name):
+                    sha256 = line.split()[0]
+                    break
+            if sha256 is None:
+                raise ValueError(f"no sha256 for {tarball_name} in SHASUMS256.txt")
+            downloads[arch] = (f"https://nodejs.org/dist/{version}/{tarball_name}", sha256)
+        return downloads
     except (urllib.error.URLError, OSError, ValueError, KeyError, json.JSONDecodeError):
         ui.warn(f"using pinned Node {NODE_PINNED_VERSION} (nodejs.org unreachable)")
-        url = (f"https://nodejs.org/dist/{NODE_PINNED_VERSION}/"
-               f"node-{NODE_PINNED_VERSION}-linux-{arch}.tar.xz")
-        return url, NODE_PINNED_SHA256[arch]
+        return {arch: (f"https://nodejs.org/dist/{NODE_PINNED_VERSION}/"
+                       f"node-{NODE_PINNED_VERSION}-linux-{arch}.tar.xz", sha)
+                for arch, sha in NODE_PINNED_SHA256.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -108,16 +100,23 @@ BASE_PACKAGES = (
 )
 
 
-def render_base_script(guest_user: str, node_url: str, node_sha256: str) -> str:
+def render_base_script(guest_user: str, node: dict[str, tuple[str, str]]) -> str:
     """The whole base-image recipe as one bash script, run as root on a fresh
     Debian VM by `prepare_build_vm`. One script rather than a cloud-config so
     every backend can run it the same way. It is the only place that turns
-    ssh password logins off (step 12), on every backend."""
+    ssh password logins off (step 12), on every backend. `node` is
+    `resolve_node_downloads()`. Every installer download fails the recipe
+    when it fails (a file first, or pipefail in the inner shell)."""
     u = guest_user
     home = f"/home/{u}"
     as_user = f"runuser -u {u} -- env HOME={home}"
+    node_cases = "\n".join(
+        f"  {dpkg}) node_url={node[arch][0]}; node_sha256={node[arch][1]} ;;"
+        for dpkg, arch in NODE_DPKG_ARCH.items())
     return f"""#!/bin/bash
 set -euo pipefail
+# The guest user's installers inherit this cwd; it must be one they can enter.
+cd /
 export DEBIAN_FRONTEND=noninteractive
 
 # 1. Base packages
@@ -146,9 +145,13 @@ cat > /etc/systemd/system/{guest.PASEO_UNIT} <<'ASBX_UNIT'
 {render_paseo_unit(u)}ASBX_UNIT
 chmod 0644 /etc/systemd/system/{guest.PASEO_UNIT}
 
-# 5. Node LTS into /usr/local (never a shell-profile shim)
-curl -fsSLo /tmp/node.tar.xz {node_url}
-echo "{node_sha256}  /tmp/node.tar.xz" | sha256sum -c -
+# 5. Node LTS into /usr/local (never a shell-profile shim), for the guest's architecture
+case "$(dpkg --print-architecture)" in
+{node_cases}
+  *) echo "unsupported guest architecture $(dpkg --print-architecture)" >&2; exit 1 ;;
+esac
+curl -fsSLo /tmp/node.tar.xz "$node_url"
+echo "$node_sha256  /tmp/node.tar.xz" | sha256sum -c -
 rm -rf /usr/local/lib/nodejs
 mkdir -p /usr/local/lib/nodejs
 tar -xJf /tmp/node.tar.xz -C /usr/local/lib/nodejs
@@ -160,7 +163,9 @@ ln -sf /usr/local/lib/nodejs/node/bin/npx /usr/local/bin/npx
 npm config set prefix /usr/local --location=global
 
 # 6. mise (per-project toolchains only)
-MISE_INSTALL_PATH=/usr/local/bin/mise sh -c "$(curl -fsSL https://mise.run)"
+curl -fsSLo /tmp/mise-install.sh https://mise.run
+MISE_INSTALL_PATH=/usr/local/bin/mise sh /tmp/mise-install.sh
+rm -f /tmp/mise-install.sh
 echo 'eval "$(/usr/local/bin/mise activate bash)"' > /etc/profile.d/asbx-mise.sh
 
 # 7. AWS CLI v2 for the guest's architecture
@@ -174,10 +179,10 @@ npm i -g @openai/codex @google/gemini-cli @getpaseo/cli
 
 # 9. Per-user installers, as the guest user so their self-updates work:
 #    opencode (must not run as root), omp (~/.local/bin), Claude Code (~/.local/bin)
-{as_user} bash -c 'curl -fsSL https://opencode.ai/install | bash'
+{as_user} bash -c 'set -o pipefail; curl -fsSL https://opencode.ai/install | bash'
 ln -sf {home}/.opencode/bin/opencode /usr/local/bin/opencode
-{as_user} sh -c 'curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.sh | sh -s -- --binary'
-{as_user} bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+{as_user} bash -c 'set -o pipefail; curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.sh | sh -s -- --binary'
+{as_user} bash -c 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash'
 # Paseo: no server-side speech models; clients do dictation locally
 {as_user} paseo daemon config set features.dictation.enabled false
 
@@ -260,6 +265,5 @@ def prepare_build_vm(g: Guest, cfg: dict, recipe: str) -> None:
 
 
 def cmd_build_base(backend: SandboxBackend, cfg: dict) -> None:
-    node_url, node_sha256 = resolve_node_download()
-    recipe = render_base_script(cfg["guest_user"], node_url, node_sha256)
+    recipe = render_base_script(cfg["guest_user"], resolve_node_downloads())
     backend.build_base(cfg, lambda g: prepare_build_vm(g, cfg, recipe))

@@ -57,6 +57,53 @@ def test_agent_loaded_prints_the_gui_domain_label(launchctl):
     assert launchd.agent_loaded("com.asbx.x")
 
 
+# Trimmed from real `launchctl print gui/<uid>/<label>` output.
+PRINT_RUNNING = """gui/501/com.asbx.vm.x = {
+\tactive count = 1
+\tpath = /Users/me/.config/agent-sandbox/launchd/com.asbx.vm.x.plist
+\tstate = running
+
+\tprogram = /opt/homebrew/bin/tart
+\targuments = {
+\t\t/opt/homebrew/bin/tart
+\t\trun
+\t\tx
+\t}
+
+\truns = 1
+\tpid = 4242
+\timmediate reason = speculative
+\tlast exit code = (never exited)
+}
+"""
+PRINT_EXITED = """gui/501/com.asbx.vm.x = {
+\tactive count = 0
+\tpath = /Users/me/.config/agent-sandbox/launchd/com.asbx.vm.x.plist
+\tstate = not running
+
+\tprogram = /opt/homebrew/bin/tart
+\truns = 1
+\tlast exit code = 0
+}
+"""
+
+
+@pytest.mark.parametrize("rc, stdout, running", [(0, PRINT_RUNNING, True), (0, PRINT_EXITED, False),
+                                                 (113, "", False)])
+def test_job_running_needs_a_loaded_job_with_a_pid(monkeypatch, rc, stdout, running):
+    """A job stays loaded after its program exits cleanly, as when a guest
+    powers itself off, so being loaded isn't enough."""
+    calls = []
+
+    def run(args):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, rc, stdout, "")
+
+    monkeypatch.setattr(launchd, "run_launchctl", run)
+    assert launchd.job_running("com.asbx.vm.x") is running
+    assert calls == [["print", f"gui/{os.getuid()}/com.asbx.vm.x"]]
+
+
 def test_install_agent_writes_launch_agents_and_bootstraps(launchctl, tmp_path, monkeypatch):
     monkeypatch.setattr(launchd.Path, "home", classmethod(lambda cls: tmp_path))
     body = launchd.render_plist("com.asbx.x", ["/bin/true"])

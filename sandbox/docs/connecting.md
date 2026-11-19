@@ -110,7 +110,7 @@ Login (sshd) on the Mac. Steps 1 to 3 above are otherwise the same:
 ```
 $ asbx ssh-config demo --jump you@mac
 Host sandbox-demo
-    ProxyCommand ssh you@mac '/usr/bin/env PATH=/opt/homebrew/bin:/usr/bin:/bin /usr/bin/python3 /Users/you/agent-config/sandbox/asbx ssh-proxy sandbox-demo'
+    ProxyCommand ssh -T you@mac '/usr/bin/env PATH=/opt/homebrew/bin:/usr/bin:/bin /usr/bin/python3 /Users/you/agent-config/sandbox/asbx ssh-proxy sandbox-demo'
     User agent
     IdentityFile ~/.ssh/id_ed25519
     IdentitiesOnly yes
@@ -122,6 +122,9 @@ Host sandbox-demo
 The command on the Mac uses absolute paths and sets its own `PATH`, so it
 works in a non-interactive ssh session there. Host-key checking is off for
 the same reason as above. `--direct` errors on Tart: no address is pinned.
+So does a `--jump` with a `:port` or a comma-separated hop list, which a
+plain `ssh` argument can't express; put the port or hops in a `Host` alias
+in the other machine's `~/.ssh/config` and pass that alias instead.
 
 ## Direct access over an ingress interface
 

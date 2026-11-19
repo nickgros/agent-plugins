@@ -47,6 +47,26 @@ def test_state_of_a_missing_instance_is_absent():
     assert IncusBackend(fake).state("sandbox-demo") == ABSENT
 
 
+def test_state_ignores_instances_that_only_share_the_name_as_a_prefix():
+    # `incus list sandbox-demo` also lists a sibling group's sandbox and the
+    # snapshot fallback copies; neither means sandbox-demo exists.
+    fake = FakeIncus()
+    fake.stub("list", "sandbox-demo", "--format", "json",
+              stdout='[{"name": "sandbox-demo-snap-pre1", "status": "Stopped"},'
+                     ' {"name": "sandbox-demo2", "status": "Running"}]')
+
+    assert IncusBackend(fake).state("sandbox-demo") == ABSENT
+
+
+def test_state_picks_the_exact_name_out_of_its_prefix_matches():
+    fake = FakeIncus()
+    fake.stub("list", "sandbox-demo", "--format", "json",
+              stdout='[{"name": "sandbox-demo-snap-pre1", "status": "Stopped"},'
+                     ' {"name": "sandbox-demo", "status": "Running"}]')
+
+    assert IncusBackend(fake).state("sandbox-demo") == RUNNING
+
+
 def test_metadata_lives_in_user_asbx_config_keys():
     fake = FakeIncus()
     fake.stub("config", "get", "user.asbx.group", stdout="demo\n")
@@ -58,14 +78,37 @@ def test_metadata_lives_in_user_asbx_config_keys():
     assert backend.meta_get("sandbox-demo", META_GROUP) == "demo"
 
 
-def test_start_refuses_an_instance_marked_with_the_removed_guest_firewall():
+@pytest.fixture
+def quick_start(monkeypatch):
+    monkeypatch.setattr(incusbackend, "wait_for_agent", lambda *a, **k: None)
+    monkeypatch.setattr(incusbackend.guest, "wait_for_cloud_init", lambda g: None)
+    monkeypatch.setattr(incusbackend.netacl, "pin_nic", lambda *a, **k: "10.210.86.192")
+
+
+def test_start_attaches_the_acl_to_a_guest_firewall_instance_before_booting_it(cfg, quick_start):
+    # The ACL, not the in-guest firewall the agent can disable, filters it, so
+    # it may boot; booting is what lets `rebuild` check it for unsaved work.
     fake = FakeIncus()
+    fake.set_instance(exists=True, state="Stopped")
     fake.stub("config", "get", "user.asbx.egress_mode", stdout="guest-nft")
 
-    with pytest.raises(AsbxError, match="asbx rebuild demo"):
-        IncusBackend(fake).start({}, _spec())
+    IncusBackend(fake).start(cfg, _spec())
 
-    assert ["start", "sandbox-demo"] not in fake.calls
+    acl = next(i for i, c in enumerate(fake.calls) if c[:4] == ["config", "device", "override", "sandbox-demo"]
+               and "security.acls=asbx-egress" in c)
+    attached = fake.calls.index(["config", "set", "sandbox-demo", "user.asbx.egress_mode", "acl"])
+    assert acl < attached < fake.calls.index(["start", "sandbox-demo"])
+
+
+@pytest.mark.parametrize("method", ["start", "restart"])
+def test_start_and_restart_of_a_missing_instance_say_it_does_not_exist(cfg, quick_start, method):
+    fake = FakeIncus()
+    fake.set_instance(exists=False)
+
+    with pytest.raises(AsbxError, match="sandbox-demo does not exist; run 'asbx up demo'"):
+        getattr(IncusBackend(fake), method)(cfg, _spec())
+
+    assert not any(c[:2] == ["config", "device"] or c[0] in ("start", "restart") for c in fake.calls)
 
 
 # ---------------------------------------------------------------------------

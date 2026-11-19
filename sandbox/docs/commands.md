@@ -34,7 +34,8 @@ Idempotent. Steps, in order:
 2. Creates the sandbox if it doesn't exist, with its egress policy bound
    before the first boot. Incus: the egress ACL is attached to the stopped
    instance, and an existing sandbox without it gets it now; if attaching
-   fails, `up` fails. A legacy `guest-nft` sandbox is refused. Tart: the
+   fails, `up` fails. A legacy `guest-nft` sandbox gets the ACL too, with a
+   warning to rebuild it. Tart: the
    Softnet rules are rendered into the VM's launchd job on every start.
    `resources` take effect only at creation; changing them later needs
    `rebuild`.
@@ -72,8 +73,9 @@ satisfied. `provision` does the following:
 
 ### `start` / `stop` / `restart <group>`
 
-Incus: wrappers over the matching `incus` command. Tart: load or unload the
-VM's launchd job (`stop` runs `tart stop` first). `start` and `restart` then
+Incus: wrappers over the matching `incus` command. Tart: `start` loads the
+VM's launchd job; `stop` asks the guest to power off, runs `tart stop` only
+if it hasn't within a minute, then unloads the job. `start` and `restart` then
 wait, for up to two minutes, until the sandbox's port 22 accepts a
 connection, so an `asbx ssh` straight after doesn't hit "No route to host".
 If it never does, they warn and suggest `asbx doctor`.
@@ -128,9 +130,11 @@ mounts and the current egress rules.
 
 Restores the snapshot `label` (on Incus, or the `<instance>-snap-<label>`
 copy if that is what exists). It errors if the label matches nothing,
-before changing anything. Tart: stops the sandbox, deletes it and clones the
-snapshot VM back in its place; the snapshot is kept. Afterwards it starts the
-sandbox and rewrites the SSH config.
+before changing anything. Tart: clones the snapshot VM to
+`<instance>-restoring` first, so a failed clone leaves the sandbox as it was.
+Then it forces the sandbox off, deletes it and renames the clone into its
+place; the snapshot is kept. Afterwards it starts the sandbox and rewrites
+the SSH config.
 
 ## Access
 

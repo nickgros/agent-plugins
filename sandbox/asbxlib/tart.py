@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 from typing import Callable, Optional, Union
 
@@ -22,16 +23,18 @@ def _decode(data: Optional[bytes]) -> Optional[str]:
     return None if data is None else data.decode("utf-8", errors="replace")
 
 
-def spawn(argv: list[str], *, input: Input = None, capture: bool = True,
-          tty: bool = False) -> subprocess.CompletedProcess:
+def spawn(argv: list[str], *, input: Input = None, capture: bool = True, tty: bool = False,
+          timeout: Optional[float] = None) -> subprocess.CompletedProcess:
     """Runs `argv`. `input` may be bytes (a pushed binary), yet output is
     always decoded text so callers inspect str. A tty run inherits the
-    terminal and captures nothing; an uncaptured run streams to it."""
+    terminal and captures nothing; an uncaptured run streams to it. A run
+    still going after `timeout` seconds is killed and raises
+    `subprocess.TimeoutExpired`."""
     if tty:
-        return subprocess.run(argv, check=False)
+        return subprocess.run(argv, check=False, timeout=timeout)
     data = input.encode() if isinstance(input, str) else input
     pipe = subprocess.PIPE if capture else None
-    proc = subprocess.run(argv, input=data, stdout=pipe, stderr=pipe, check=False)
+    proc = subprocess.run(argv, input=data, stdout=pipe, stderr=pipe, check=False, timeout=timeout)
     return subprocess.CompletedProcess(argv, proc.returncode, _decode(proc.stdout), _decode(proc.stderr))
 
 
@@ -52,8 +55,14 @@ class Tart:
         return self._executable
 
     def run(self, *args: str, input: Input = None, capture: bool = True, tty: bool = False,
-            check: bool = True) -> subprocess.CompletedProcess:
-        proc = self._runner([self.executable, *args], input=input, capture=capture, tty=tty)
+            check: bool = True, timeout: Optional[float] = None) -> subprocess.CompletedProcess:
+        """`timeout` bounds the run in seconds: tart is killed when it runs
+        longer, which counts as a failed run (exit by SIGKILL)."""
+        argv = [self.executable, *args]
+        try:
+            proc = self._runner(argv, input=input, capture=capture, tty=tty, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc = subprocess.CompletedProcess(argv, -signal.SIGKILL, None, f"timed out after {timeout}s")
         if check and proc.returncode != 0:
             stderr = getattr(proc, "stderr", None) or ""
             raise AsbxError(f"command failed: tart {' '.join(args)}\n{stderr.strip()}")
@@ -113,22 +122,23 @@ class Tart:
         return address if proc.returncode == 0 and address else None
 
     def exec(self, name: str, argv: list[str], *, input: Input = None, tty: bool = False,
-             check: bool = True) -> subprocess.CompletedProcess:
+             check: bool = True, timeout: Optional[float] = None) -> subprocess.CompletedProcess:
         """Runs `argv` through the guest agent as whatever user the agent runs
         as. `input` is fed to the command's stdin. `tty` inherits the host's
         stdio; a guest pty is requested only when that stdio is a terminal,
-        since `tart exec -t` aborts without one (e.g. output to a log file)."""
+        since `tart exec -t` aborts without one (e.g. output to a log file).
+        The agent is guest-controlled, so a caller that must not hang on it
+        passes `timeout`."""
         if tty:
             flags = ["-t", "-i"] if os.isatty(0) and os.isatty(1) else ["-i"]
         else:
             flags = ["-i"] if input is not None else []
-        return self.run("exec", *flags, name, *argv, input=input, tty=tty, check=check)
+        return self.run("exec", *flags, name, *argv, input=input, tty=tty, check=check, timeout=timeout)
 
-    def stop(self, name: str, timeout: Optional[int] = None) -> None:
-        args = ["stop", name]
-        if timeout is not None:
-            args += ["--timeout", str(timeout)]
-        self.run(*args)
+    def stop(self, name: str, *, check: bool = True) -> subprocess.CompletedProcess:
+        """Makes `tart run` stop the VM at once and exit. Fails on a VM that
+        is already stopped."""
+        return self.run("stop", name, check=check)
 
     def delete(self, *names: str) -> None:
         self.run("delete", *names)

@@ -146,11 +146,29 @@ def test_cmd_ssh_config_jump_on_tart_runs_the_proxy_command_on_the_jump_host(cfg
     [line] = [l for l in out.splitlines() if "ProxyCommand" in l]
     # The local shell hands ssh one command string, which the Mac's shell then
     # splits exactly as the Mac's own ssh config would.
-    ssh, jump, remote = shlex.split(line.split("ProxyCommand ", 1)[1])
-    assert (ssh, jump) == ("ssh", "me@mac")
+    ssh, tty, jump, remote = shlex.split(line.split("ProxyCommand ", 1)[1])
+    assert (ssh, tty, jump) == ("ssh", "-T", "me@mac")
     assert shlex.split(remote) == shlex.split(backend.ssh_route(cfg, "sandbox-demo").proxy_command)
     assert "HostName" not in out and "ProxyJump" not in out
     assert "Host sandbox-demo\n" in out and "    User agent\n" in out
+
+
+def test_proxy_command_lines_escape_percent_for_ssh_token_expansion():
+    route = SshRoute(host_key_alias="sandbox-demo", proxy_command="/100%cfg/asbx ssh-proxy sandbox-demo")
+
+    local = sshconf.render_ssh_config_block("sandbox-demo", route, "k", "kh", "dev")
+    remote = sshconf.render_remote_stanza("sandbox-demo", route, "dev", "me@mac", "id")
+
+    assert "    ProxyCommand /100%%cfg/asbx ssh-proxy sandbox-demo\n" in local
+    assert "/100%%cfg/asbx" in remote and "/100%c" not in remote
+
+
+@pytest.mark.parametrize("jump", ["me@mac:2222", "me@bastion,me@mac"])
+def test_cmd_ssh_config_jump_on_tart_refuses_a_port_or_hop_list(cfg, config_root, jump):
+    (config_root / "demo.yaml").write_text("{}\n")
+
+    with pytest.raises(AsbxError, match="Host alias"):
+        sshconf.cmd_ssh_config(TartBackend(FakeTart().tart()), cfg, "demo", jump, "~/.ssh/id_ed25519")
 
 
 def test_cmd_ssh_config_direct_is_refused_on_tart_which_pins_no_addresses(cfg, config_root):

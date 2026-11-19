@@ -16,11 +16,7 @@ SHASUMS = (
 )
 
 
-@pytest.mark.parametrize("arch, sha", [
-    ("x64", "deadbeefcafef00d0000000000000000000000000000000000000000000000"),
-    ("arm64", "1111111111111111111111111111111111111111111111111111111111111a"),
-])
-def test_resolve_node_download_uses_stubbed_index_and_shasums_for_the_arch(arch, sha):
+def test_resolve_node_downloads_uses_stubbed_index_and_shasums_for_both_arches():
     entries = [
         {"version": "v22.1.0", "lts": False},
         {"version": "v20.11.0", "lts": "Iron"},
@@ -30,44 +26,62 @@ def test_resolve_node_download_uses_stubbed_index_and_shasums_for_the_arch(arch,
         assert url == "https://nodejs.org/dist/v20.11.0/SHASUMS256.txt"
         return SHASUMS
 
-    url, sha256 = baseimage.resolve_node_download(arch, fetch_json=lambda: entries, fetch_text=fetch_text)
-    assert url == f"https://nodejs.org/dist/v20.11.0/node-v20.11.0-linux-{arch}.tar.xz"
-    assert sha256 == sha
+    downloads = baseimage.resolve_node_downloads(fetch_json=lambda: entries, fetch_text=fetch_text)
+    base = "https://nodejs.org/dist/v20.11.0/node-v20.11.0-linux"
+    assert downloads == {
+        "x64": (f"{base}-x64.tar.xz", "deadbeefcafef00d0000000000000000000000000000000000000000000000"),
+        "arm64": (f"{base}-arm64.tar.xz", "1111111111111111111111111111111111111111111111111111111111111a"),
+    }
 
 
-@pytest.mark.parametrize("arch", ["x64", "arm64"])
-def test_resolve_node_download_falls_back_to_the_pin_for_the_arch_on_url_error(arch):
+def _pinned() -> dict:
+    return {arch: (f"https://nodejs.org/dist/{baseimage.NODE_PINNED_VERSION}/"
+                   f"node-{baseimage.NODE_PINNED_VERSION}-linux-{arch}.tar.xz", sha)
+            for arch, sha in baseimage.NODE_PINNED_SHA256.items()}
+
+
+def test_resolve_node_downloads_falls_back_to_the_pins_on_url_error():
     def fetch_json():
         raise urllib.error.URLError("network unreachable")
 
-    url, sha256 = baseimage.resolve_node_download(arch, fetch_json=fetch_json, fetch_text=lambda url: "")
-    assert url.endswith(f"node-{baseimage.NODE_PINNED_VERSION}-linux-{arch}.tar.xz")
-    assert sha256 == baseimage.NODE_PINNED_SHA256[arch]
+    assert baseimage.resolve_node_downloads(fetch_json=fetch_json, fetch_text=lambda url: "") == _pinned()
 
 
-def test_resolve_node_download_falls_back_when_tarball_sha_is_absent():
-    url, sha256 = baseimage.resolve_node_download(
-        "x64", fetch_json=lambda: [{"version": "v20.11.0", "lts": "Iron"}],
+def test_resolve_node_downloads_falls_back_when_one_tarball_sha_is_absent():
+    downloads = baseimage.resolve_node_downloads(
+        fetch_json=lambda: [{"version": "v20.11.0", "lts": "Iron"}],
         fetch_text=lambda url: "abc  node-v20.11.0-linux-arm64.tar.xz\n",
     )
-    assert baseimage.NODE_PINNED_VERSION in url
-    assert sha256 == baseimage.NODE_PINNED_SHA256["x64"]
+    assert downloads == _pinned()
 
 
-@pytest.mark.parametrize("machine, arch", [
-    ("x86_64", "x64"), ("AMD64", "x64"), ("arm64", "arm64"), ("aarch64", "arm64"),
-])
-def test_node_arch_maps_host_machine_names(machine, arch):
-    assert baseimage.node_arch(machine) == arch
-
-
-def test_node_arch_refuses_an_unsupported_machine():
-    with pytest.raises(AsbxError, match="riscv64"):
-        baseimage.node_arch("riscv64")
+NODE = {"x64": ("https://example.invalid/node-x64.tar.xz", "aaa"),
+        "arm64": ("https://example.invalid/node-arm64.tar.xz", "bbb")}
 
 
 def _script() -> str:
-    return baseimage.render_base_script("dev", "https://example.invalid/node.tar.xz", "abc")
+    return baseimage.render_base_script("dev", NODE)
+
+
+def test_render_base_script_picks_node_by_the_guest_dpkg_arch():
+    script = _script()
+    assert 'case "$(dpkg --print-architecture)" in' in script
+    assert "amd64) node_url=https://example.invalid/node-x64.tar.xz; node_sha256=aaa ;;" in script
+    assert "arm64) node_url=https://example.invalid/node-arm64.tar.xz; node_sha256=bbb ;;" in script
+    assert 'curl -fsSLo /tmp/node.tar.xz "$node_url"' in script
+
+
+def test_render_base_script_starts_in_a_cwd_the_guest_user_can_enter():
+    assert _script().startswith("#!/bin/bash\nset -euo pipefail\n# The guest user's installers inherit this cwd; it must be one they can enter.\ncd /\n")
+
+
+def test_render_base_script_installers_fail_the_recipe_on_a_failed_download():
+    script = _script()
+    assert "$(curl" not in script
+    for line in script.splitlines():
+        if "curl" in line and "|" in line and not line.startswith("echo"):
+            assert "set -o pipefail;" in line, line
+    assert "curl -fsSLo /tmp/mise-install.sh https://mise.run" in script
 
 
 def test_render_base_script_is_valid_bash_that_stops_on_errors():
@@ -78,9 +92,8 @@ def test_render_base_script_is_valid_bash_that_stops_on_errors():
 
 def test_render_base_script_installs_per_user_tools_as_the_guest_user():
     script = _script()
-    assert "runuser -u dev -- env HOME=/home/dev sh -c" in script
     assert "can1357/oh-my-pi/main/scripts/install.sh" in script
-    assert "runuser -u dev -- env HOME=/home/dev bash -c 'curl -fsSL https://claude.ai/install.sh | bash'" in script
+    assert "runuser -u dev -- env HOME=/home/dev bash -c 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash'" in script
     assert "@anthropic-ai/claude-code" not in script
     assert "npm i -g @openai/codex @google/gemini-cli @getpaseo/cli" in script
 

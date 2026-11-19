@@ -354,10 +354,10 @@ def sync_env(host_home, config_root, cfg):
 def _states(fake: FakeIncus, running=(), stopped=(), absent=()):
     for inst in running:
         fake.stub("info", inst)
-        fake.stub("list", inst, "--format", "json", stdout='[{"status": "Running"}]')
+        fake.stub("list", inst, "--format", "json", stdout=f'[{{"name": "{inst}", "status": "Running"}}]')
     for inst in stopped:
         fake.stub("info", inst)
-        fake.stub("list", inst, "--format", "json", stdout='[{"status": "Stopped"}]')
+        fake.stub("list", inst, "--format", "json", stdout=f'[{{"name": "{inst}", "status": "Stopped"}}]')
     for inst in absent:
         fake.stub("info", inst, rc=1)
 

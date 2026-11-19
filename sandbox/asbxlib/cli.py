@@ -53,20 +53,22 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="asbx", description="agent sandbox VMs on Incus (Linux) or Tart (macOS)")
     sub = p.add_subparsers(dest="command", required=True)
 
-    def add(name: str, handler, *, needs_config: bool = True, **kwargs):
+    def add(name: str, handler, *, needs_config: bool = True, needs_backend: bool = True, **kwargs):
+        """`needs_backend=False` handlers get None for the backend, so they run on
+        hosts no backend supports."""
         sp = sub.add_parser(name, **kwargs)
-        sp.set_defaults(handler=handler, needs_config=needs_config)
+        sp.set_defaults(handler=handler, needs_config=needs_config, needs_backend=needs_backend)
         return sp
 
     add("init", lambda backend, cfg, args: hostsetup.cmd_init(backend), needs_config=False,
         help="set up host config, ssh key and the backend's host-side state")
 
-    sp = add("doctor", lambda backend, cfg, args: doctor.cmd_doctor(backend, cfg, args.fix),
-             needs_config=False, help="check host readiness")
+    sp = add("doctor", _handle_doctor, needs_config=False, needs_backend=False,
+             help="check host readiness")
     sp.add_argument("--fix", action="store_true")
 
-    sp = add("install", lambda backend, cfg, args: hostsetup.cmd_install(args.force), needs_config=False,
-             help="symlink this script to ~/.local/bin/asbx")
+    sp = add("install", lambda backend, cfg, args: hostsetup.cmd_install(args.force),
+             needs_config=False, needs_backend=False, help="symlink this script to ~/.local/bin/asbx")
     sp.add_argument("--force", action="store_true")
 
     add("build-base", lambda backend, cfg, args: baseimage.cmd_build_base(backend, cfg),
@@ -177,6 +179,16 @@ def _handle_auth(backend: SandboxBackend, cfg: dict, args) -> None:
     auth.run_auth(backend.guest(manifest.instance), manifest, cfg)
 
 
+def _handle_doctor(backend: None, cfg: Optional[dict], args) -> int:
+    """Builds its own backend so a host no backend supports still gets a report."""
+    try:
+        backend = make_backend(cfg)
+    except AsbxError as e:
+        print(f"FAIL {e}")
+        return 1
+    return doctor.cmd_doctor(backend, cfg, args.fix)
+
+
 def _handle_provision(backend: SandboxBackend, cfg: dict, args) -> None:
     up.run_provision(backend, manifest_mod.load_manifest(args.group, cfg), cfg)
 
@@ -205,7 +217,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 cfg = config.load_config()
             except AsbxError:
                 pass
-        rc = args.handler(make_backend(cfg), cfg, args)
+        backend = make_backend(cfg) if args.needs_backend else None
+        rc = args.handler(backend, cfg, args)
     except AsbxError as e:
         fail(str(e))
         return 1

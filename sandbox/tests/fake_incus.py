@@ -1,6 +1,7 @@
 """A test double for asbxlib.incus.Incus that never spawns `incus`."""
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -34,6 +35,7 @@ class FakeIncus(Incus):
         super().__init__()
         self.calls: list[list[str]] = []          # argv after "incus"
         self.pushed: dict[str, str] = {}          # guest path -> body
+        self.created: set[str] = set()            # instances `create` made
         self._rules: list[tuple[tuple[str, ...], int, str, str]] = []
         self.stub("id", "-u", stdout="1000\n")    # uid_of, unless a test overrides it first
 
@@ -42,11 +44,12 @@ class FakeIncus(Incus):
         argv in order (subsequence match)."""
         self._rules.append((tokens, rc, stdout, stderr))
 
-    def set_instance(self, exists: bool = True, state: str = "Running") -> None:
-        """Scripts `info` (exists) and `list --format json` (state)."""
+    def set_instance(self, exists: bool = True, state: str = "Running",
+                     name: str = "sandbox-demo") -> None:
+        """Scripts `info` (exists) and `list --format json` (state) for `name`."""
         self.stub("info", rc=0 if exists else 1)
         if exists:
-            self.stub("list", "--format", "json", stdout=f'[{{"status": "{state}"}}]')
+            self.stub("list", "--format", "json", stdout=f'[{{"name": "{name}", "status": "{state}"}}]')
         else:
             self.stub("list", "--format", "json", stdout="[]")
 
@@ -64,6 +67,12 @@ class FakeIncus(Incus):
             tty: bool = False, stdin: str | None = None) -> subprocess.CompletedProcess:
         argv = list(args)
         self.calls.append(argv)
+        if argv[0] == "create":
+            self.created.add(argv[2])
+        if argv[0] == "list" and len(argv) > 1 and argv[1] in self.created:
+            # A created instance exists from then on, whatever was scripted before.
+            return subprocess.CompletedProcess(args=["incus", *argv], returncode=0, stderr="",
+                                               stdout=json.dumps([{"name": argv[1], "status": "Stopped"}]))
         rc, stdout, stderr = 0, "", ""
         for tokens, rule_rc, rule_stdout, rule_stderr in self._rules:
             if _matches(argv, tokens):

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -77,6 +78,17 @@ def install_agent(label: str, plist_bytes: bytes) -> Path:
 
 def agent_loaded(label: str) -> bool:
     return run_launchctl(["print", f"{domain()}/{label}"]).returncode == 0
+
+
+# `launchctl print` lists `pid = <n>` only while the job's program runs.
+_PID_RE = re.compile(r"^\s*pid = \d+\s*$", re.MULTILINE)
+
+
+def job_running(label: str) -> bool:
+    """Whether the job is loaded and its program is running now: a job
+    stays loaded after its program exits when launchd doesn't restart it."""
+    proc = run_launchctl(["print", f"{domain()}/{label}"])
+    return proc.returncode == 0 and _PID_RE.search(proc.stdout or "") is not None
 
 
 def bootstrap(path: Path) -> None:

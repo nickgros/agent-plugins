@@ -143,6 +143,7 @@ def test_cmd_restore_from_snapshot_restarts_the_instance_and_rewrites_its_ssh_co
 
     fake = FakeIncus()
     fake.set_snapshots(["pre1"])
+    fake.set_instance(exists=True, state="Stopped")
 
     lifecycle.cmd_restore(IncusBackend(fake), cfg, "demo", "pre1", yes=True)
 
@@ -363,6 +364,7 @@ def test_start_and_restart_wait_for_ssh_and_only_warn_when_it_never_answers(
         monkeypatch, cfg, capsys, command, reachable, quick_boot):
     monkeypatch.setattr(lifecycle.manifest_mod, "load_manifest", lambda group, cfg: _fake_manifest())
     fake = FakeIncus()
+    fake.set_instance(exists=True, state="Stopped")
     probes: list[tuple] = []
     monkeypatch.setattr(lifecycle.host, "wait_for_port", lambda name, port: probes.append(
         (name, port, [command, "sandbox-demo"] in fake.calls)) or reachable)

@@ -72,6 +72,24 @@ def test_make_backend_auto_refuses_an_unsupported_platform(monkeypatch):
         cli.make_backend({"backend": "auto"})
 
 
+def test_install_needs_no_backend_on_an_unsupported_platform(config_root, monkeypatch):
+    monkeypatch.setattr(cli.sys, "platform", "freebsd14")
+    forced = []
+    monkeypatch.setattr(cli.hostsetup, "cmd_install", forced.append)
+
+    assert cli.main(["install", "--force"]) == 0
+    assert forced == [True]
+
+
+def test_doctor_reports_an_unsupported_platform_instead_of_erroring(config_root, monkeypatch, capsys):
+    monkeypatch.setattr(cli.sys, "platform", "freebsd14")
+
+    assert cli.main(["doctor"]) == 1
+    out = capsys.readouterr()
+    assert "FAIL no sandbox backend for platform freebsd14" in out.out
+    assert out.err == ""
+
+
 # ---------------------------------------------------------------------------
 # Incus-only commands
 # ---------------------------------------------------------------------------
@@ -138,3 +156,61 @@ def test_relay_tcp_reports_an_unreachable_port():
         port = s.getsockname()[1]
     with pytest.raises(AsbxError, match=f"cannot connect to 127.0.0.1:{port}"):
         host.relay_tcp("127.0.0.1", port)
+
+
+def _serve_once(handler) -> int:
+    server = socket.create_server(("127.0.0.1", 0))
+
+    def run():
+        conn, _ = server.accept()
+        with conn:
+            handler(conn)
+        server.close()
+
+    threading.Thread(target=run, daemon=True).start()
+    return server.getsockname()[1]
+
+
+def test_relay_tcp_ends_quietly_on_a_connection_reset():
+    def reset(conn):
+        conn.recv(1)
+        conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
+
+    port = _serve_once(reset)
+    in_r, in_w = os.pipe()
+    out_r, out_w = os.pipe()
+    os.write(in_w, b"x")
+
+    host.relay_tcp("127.0.0.1", port, stdin_fd=in_r, stdout_fd=out_w)
+
+    for fd in (in_r, in_w, out_r, out_w):
+        os.close(fd)
+
+
+def test_relay_tcp_ends_quietly_when_stdout_is_closed():
+    port = _serve_once(lambda conn: conn.sendall(b"hello"))
+    in_r, in_w = os.pipe()
+    out_r, out_w = os.pipe()
+    os.close(in_w)
+    os.close(out_r)
+
+    host.relay_tcp("127.0.0.1", port, stdin_fd=in_r, stdout_fd=out_w)
+
+    os.close(in_r)
+    os.close(out_w)
+
+
+def test_relay_tcp_retries_a_short_write(monkeypatch):
+    port = _serve_once(lambda conn: conn.sendall(b"hello"))
+    in_r, in_w = os.pipe()
+    out_r, out_w = os.pipe()
+    os.close(in_w)
+    real_write = os.write
+    monkeypatch.setattr(host.os, "write", lambda fd, data: real_write(fd, bytes(data[:1])))
+
+    host.relay_tcp("127.0.0.1", port, stdin_fd=in_r, stdout_fd=out_w)
+
+    os.close(out_w)
+    with os.fdopen(out_r, "rb") as out:
+        assert out.read() == b"hello"
+    os.close(in_r)

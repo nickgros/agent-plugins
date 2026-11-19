@@ -11,9 +11,9 @@ agent.
 ## Considered options
 
 - **In-guest nftables.** This was the old fallback, used when the NIC ACL
-  couldn't be attached. Removed, because the agent can flush it. Sandboxes
-  marked `user.asbx.egress_mode=guest-nft` are refused by `up` and must be
-  rebuilt.
+  couldn't be attached. Removed, because the agent can flush it. A sandbox
+  marked `user.asbx.egress_mode=guest-nft` gets the NIC ACL attached before
+  its next boot, with a warning to rebuild it to drop the old in-guest rules.
 - **An ACL on the bridge network as a whole.** Rejected because it can't
   isolate sandboxes from each other on the same bridge.
 

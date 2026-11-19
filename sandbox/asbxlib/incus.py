@@ -95,6 +95,9 @@ class Incus:
         return proc.returncode == 0
 
     def instance_state(self, instance: str) -> Optional[str]:
+        """The instance's Incus status, or None when it doesn't exist. `incus
+        list <name>` matches by prefix (`sandbox-demo` also lists `sandbox-demo2`
+        and `sandbox-demo-snap-*`), so the entry is picked by exact name."""
         proc = self.run("list", instance, "--format", "json", check=False)
         if proc.returncode != 0:
             return None
@@ -102,9 +105,7 @@ class Incus:
             data = json.loads(proc.stdout)
         except json.JSONDecodeError:
             return None
-        if not data:
-            return None
-        return data[0]["status"]
+        return next((e.get("status") for e in data if e.get("name") == instance), None)
 
     def instance_names(self, prefix: str) -> list[str]:
         """Names of the instances that start with `prefix`."""

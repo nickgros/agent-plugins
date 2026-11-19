@@ -1,3 +1,5 @@
+import signal
+import subprocess
 import sys
 
 import pytest
@@ -22,6 +24,24 @@ def test_run_raises_with_stderr_on_failure(fake):
 def test_run_unchecked_returns_the_failure(fake):
     fake.stub("ip", rc=1)
     assert fake.tart().run("ip", "x", check=False).returncode == 1
+
+
+def test_a_run_past_its_timeout_fails_checked_or_not():
+    """The runner kills tart and raises, as `subprocess.run` does; Tart
+    reports that as a failed run, so an unchecked caller carries on."""
+    seen = {}
+
+    def runner(argv, *, input=None, capture=True, tty=False, timeout=None):
+        seen["timeout"] = timeout
+        raise subprocess.TimeoutExpired(argv, timeout)
+
+    t = Tart(runner=runner, executable=EXECUTABLE)
+    proc = t.exec("vm", ["sleep", "9"], check=False, timeout=5)
+    assert seen["timeout"] == 5
+    assert proc.returncode == -signal.SIGKILL
+    assert proc.stderr == "timed out after 5s"
+    with pytest.raises(AsbxError, match="tart exec vm sleep 9\ntimed out after 5s"):
+        t.exec("vm", ["sleep", "9"], timeout=5)
 
 
 def test_missing_tart_is_a_user_facing_error(monkeypatch):
@@ -97,9 +117,9 @@ def test_tty_exec_without_a_terminal_requests_no_guest_pty(fake, monkeypatch):
 def test_clone_streams_its_output(fake):
     seen = {}
 
-    def runner(argv, *, input=None, capture=True, tty=False):
+    def runner(argv, *, input=None, capture=True, tty=False, timeout=None):
         seen["capture"] = capture
-        return fake(argv, input=input, capture=capture, tty=tty)
+        return fake(argv, input=input, capture=capture, tty=tty, timeout=timeout)
 
     Tart(runner=runner, executable=EXECUTABLE).clone("ghcr.io/cirruslabs/debian:trixie", "b")
     assert fake.calls == [["clone", "ghcr.io/cirruslabs/debian:trixie", "b"]]
@@ -107,14 +127,23 @@ def test_clone_streams_its_output(fake):
 
 
 def test_stop_delete_rename_argv(fake):
-    for name in ("a", "b", "c"):
+    fake.add_vm("a", state="running")
+    for name in ("b", "c"):
         fake.add_vm(name)
     t = fake.tart()
-    t.stop("a", timeout=60)
+    t.stop("a")
     t.delete("a", "b")
     t.rename("c", "d")
-    assert fake.calls == [["stop", "a", "--timeout", "60"], ["delete", "a", "b"], ["rename", "c", "d"]]
+    assert fake.calls == [["stop", "a"], ["delete", "a", "b"], ["rename", "c", "d"]]
     assert list(fake.vms) == ["d"]
+
+
+def test_stop_of_a_stopped_vm_fails_unless_unchecked(fake):
+    """Real `tart stop` fails on a stopped VM; so does the fake."""
+    fake.add_vm("a")
+    with pytest.raises(AsbxError, match='tart stop a\nVM "a" is not running'):
+        fake.tart().stop("a")
+    assert fake.tart().stop("a", check=False).returncode == 1
 
 
 def test_version_is_empty_when_tart_fails(fake):
@@ -132,3 +161,8 @@ def test_spawn_reports_exit_code_and_stderr():
     proc = spawn([sys.executable, "-c", "import sys; sys.stderr.write('boom'); sys.exit(3)"])
     assert proc.returncode == 3
     assert proc.stderr == "boom"
+
+
+def test_spawn_kills_a_run_past_its_timeout():
+    with pytest.raises(subprocess.TimeoutExpired):
+        spawn([sys.executable, "-c", "import time; time.sleep(30)"], timeout=0.2)

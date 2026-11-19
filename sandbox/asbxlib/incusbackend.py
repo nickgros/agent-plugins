@@ -94,12 +94,14 @@ class IncusBackend:
     # -- host preparation ---------------------------------------------------
 
     def preflight(self, cfg: dict) -> None:
-        # ADR 0005: once the ingress firewall is opted in, no sandbox runs without it.
-        ingress.require_firewall(cfg)
+        # The ACL is refreshed before the firewall check so `init` still creates
+        # it on a host whose opted-in firewall isn't loaded yet.
         try:
             netacl.ensure_acl(self.incus, cfg)
         except AsbxError as e:
             ui.warn(f"could not refresh network ACL: {e}")
+        # ADR 0005: once the ingress firewall is opted in, no sandbox runs without it.
+        ingress.require_firewall(cfg)
 
     def base_image(self, cfg: dict) -> Optional[str]:
         return self.incus.image_alias_exists(cfg["image_alias"])
@@ -162,15 +164,24 @@ class IncusBackend:
 
     def _ensure_egress(self, cfg: dict, spec: SandboxSpec) -> None:
         """A first `up` that died between create and the ACL attach leaves an
-        unfiltered instance, so the ACL is (re)applied rather than assumed."""
+        unfiltered instance, so the ACL is (re)applied rather than assumed. A
+        sandbox from the removed in-guest firewall fallback gets the ACL too,
+        so it boots filtered and `rebuild` can check it for unsaved work."""
         mode = self.meta_get(spec.instance, META_EGRESS_MODE)
+        if mode == "acl":
+            return
         if mode == "guest-nft":
-            raise AsbxError(
-                f"{spec.instance} was built with the removed in-guest firewall fallback, "
-                f"which the agent can disable; run 'asbx rebuild {spec.group}'"
-            )
-        if mode != "acl":
-            netacl.apply_nic_acl(self.incus, spec.instance, cfg)
+            ui.warn(f"{spec.instance} was built with the removed in-guest firewall fallback; "
+                    f"attaching the egress ACL ('asbx rebuild {spec.group}' drops the stale in-guest rules)")
+        netacl.apply_nic_acl(self.incus, spec.instance, cfg)
+
+    def _require_instance(self, spec: SandboxSpec) -> str:
+        """The instance's state, or raises when it doesn't exist (before the
+        ACL attach, whose failure would otherwise blame the Incus version)."""
+        state = self.state(spec.instance)
+        if state == ABSENT:
+            raise AsbxError(f"{spec.instance} does not exist; run 'asbx up {spec.group}'")
+        return state
 
     def _sync_mounts(self, mounts: list[Mount], instance: str) -> bool:
         """Makes the instance's `mnt-*` disk devices match `mounts`; True when
@@ -219,8 +230,9 @@ class IncusBackend:
         guest.wait_for_cloud_init(self.guest(instance))
 
     def start(self, cfg: dict, spec: SandboxSpec) -> None:
+        state = self._require_instance(spec)
         self._ensure_egress(cfg, spec)
-        if self.state(spec.instance) != RUNNING:
+        if state != RUNNING:
             ui.ok(f"starting {spec.instance}")
             self.incus.run("start", spec.instance)
         self._wait_ready(spec.instance)
@@ -232,6 +244,7 @@ class IncusBackend:
         self.incus.run("stop", instance)
 
     def restart(self, cfg: dict, spec: SandboxSpec) -> None:
+        self._require_instance(spec)
         self._ensure_egress(cfg, spec)
         self.incus.run("restart", spec.instance)
         self._wait_ready(spec.instance)
@@ -428,9 +441,7 @@ class IncusBackend:
                 continue
             egress_mode = self.meta_get(instance, META_EGRESS_MODE)
             check(f"{instance}: egress ACL attached", egress_mode == "acl",
-                  f"egress_mode={egress_mode or 'unset'}; "
-                  + (f"run 'asbx rebuild {group}' (the in-guest firewall fallback is gone)"
-                     if egress_mode == "guest-nft" else f"run 'asbx up {group}'"))
+                  f"egress_mode={egress_mode or 'unset'}; run 'asbx up {group}' to attach it")
             check(f"{instance}: eth0 pinned with IP/MAC filtering", self.pinned_ipv4(instance) is not None,
                   f"anti-spoofing is off or the IPv4 isn't pinned; run 'asbx up {group}'")
             if state == RUNNING:

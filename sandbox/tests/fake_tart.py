@@ -3,7 +3,7 @@
 `FakeTart` is the runner of an `asbxlib.tart.Tart`; `FakeLaunchctl` replaces
 `asbxlib.launchd.run_launchctl`. Linked together they keep a small VM
 inventory consistent: loading a VM's launchd job marks it running, as the
-real `tart run` would.
+real `tart run` would, and the job's program runs until the VM stops.
 """
 from __future__ import annotations
 
@@ -43,7 +43,9 @@ class FakeTart:
         self.inputs: list[Union[str, bytes, None]] = []         # stdin per call, parallel to calls
         self.events: list[list[str]] = []                       # tart and launchctl calls, in order
         self.vms: dict[str, dict] = {}                          # name -> tart list fields
+        self.launched: set[str] = set()                         # VMs a loaded launchd job's `tart run` runs
         self._rules: list[tuple[tuple[str, ...], int, str, str]] = []
+        self._hangs: list[tuple[str, ...]] = []
         self.ignore_poweroff = False                            # a guest that won't shut itself down
 
     def tart(self) -> Tart:
@@ -56,6 +58,20 @@ class FakeTart:
         """First matching rule wins; a rule matches when every token appears in
         argv in order (subsequence match)."""
         self._rules.append((tokens, rc, stdout, stderr))
+
+    def hang(self, *tokens: str) -> None:
+        """Matching calls never finish, like an exec into a guest agent that
+        never answers. Given a timeout they raise `subprocess.TimeoutExpired`,
+        as the real runner does; without one the test fails, since asbx
+        would hang there."""
+        self._hangs.append(tokens)
+
+    def set_state(self, name: str, state: str) -> None:
+        """What `tart list` reports for `name` from now on. A VM that stops
+        takes its `tart run`, and so its launchd job's program, with it."""
+        self.vms[name]["State"] = state
+        if state != "running":
+            self.launched.discard(name)
 
     def pushed(self, remote: str) -> Union[str, bytes, None]:
         """The body of the last push to `remote`."""
@@ -73,12 +89,17 @@ class FakeTart:
         raise AssertionError(f"no event matches {tokens}")
 
     def __call__(self, argv: list[str], *, input: Union[str, bytes, None] = None,
-                 capture: bool = True, tty: bool = False) -> subprocess.CompletedProcess:
+                 capture: bool = True, tty: bool = False,
+                 timeout: Optional[float] = None) -> subprocess.CompletedProcess:
         assert argv[0] == EXECUTABLE
         args = list(argv[1:])
         self.calls.append(args)
         self.inputs.append(input)
         self.events.append(["tart", *args])
+        if any(_matches(args, tokens) for tokens in self._hangs):
+            if timeout is None:
+                raise AssertionError(f"tart {' '.join(args)} would hang forever: no timeout")
+            raise subprocess.TimeoutExpired(argv, timeout)
         for tokens, rule_rc, rule_stdout, rule_stderr in self._rules:
             if _matches(args, tokens):
                 rc, stdout, stderr = rule_rc, rule_stdout, rule_stderr
@@ -107,11 +128,16 @@ class FakeTart:
         elif cmd == "rename":
             self.vms[args[2]] = self.vms.pop(args[1])
         elif cmd == "stop":
-            self.vms[args[1]]["State"] = "stopped"
+            name = args[1]
+            if name not in self.vms:
+                return 1, "", f"VM {name} does not exist"
+            if self.vms[name]["State"] == "stopped":
+                return 1, "", f'VM "{name}" is not running'   # as real tart fails
+            self.set_state(name, "stopped")
         elif cmd == "exec" and args[-4:] == ["sudo", "-n", "systemctl", "poweroff"]:
             vm = args[-5]
             if self.vms.get(vm, {}).get("State") == "running" and not self.ignore_poweroff:
-                self.vms[vm]["State"] = "stopped"   # the guest shuts itself down
+                self.set_state(vm, "stopped")   # the guest shuts itself down
         elif cmd == "set" and "--disk-size" in args:
             self.vms[args[1]]["Disk"] = int(args[args.index("--disk-size") + 1])
         return 0, "", ""
@@ -119,8 +145,10 @@ class FakeTart:
 
 class FakeLaunchctl:
     """A `launchd.run_launchctl` that tracks loaded jobs. Bootstrapping a
-    `tart run` job marks its VM running in the linked `FakeTart`; bootout
-    marks it stopped."""
+    `tart run` job marks its VM running in the linked `FakeTart`, with the
+    job's program running; bootout marks it stopped. `print` shows a pid
+    only while that program runs: a job stays loaded after its VM stops on
+    its own. Jobs that don't run a VM run once at load and exit."""
 
     def __init__(self, tart: Optional[FakeTart] = None) -> None:
         self.tart = tart
@@ -138,16 +166,29 @@ class FakeLaunchctl:
             return
         vm = self._vm(body)
         if vm in self.tart.vms:
-            self.tart.vms[vm]["State"] = state
+            self.tart.set_state(vm, state)
+            if state == "running":
+                self.tart.launched.add(vm)
+
+    def _print(self, target: str, body: bytes) -> str:
+        """The parts of real `launchctl print` output asbx reads."""
+        running = self.tart is not None and self._vm(body) in self.tart.launched
+        process = "\tstate = running\n\tpid = 4242\n" if running else "\tstate = not running\n"
+        return f"{target} = {{\n\tactive count = {int(running)}\n{process}}}\n"
 
     def __call__(self, args: list[str]) -> subprocess.CompletedProcess:
         self.calls.append(list(args))
         if self.tart is not None:
             self.tart.events.append(["launchctl", *args])
-        rc, stderr = 0, ""
+        rc, stdout, stderr = 0, "", ""
         cmd = args[0]
         if cmd == "print":
-            rc = 0 if args[1].rsplit("/", 1)[-1] in self.loaded else 113
+            label = args[1].rsplit("/", 1)[-1]
+            body = self.loaded.get(label)
+            if body is None:
+                rc, stderr = 113, f'Could not find service "{label}" in domain for port'
+            else:
+                stdout = self._print(args[1], body)
         elif cmd == "bootstrap":
             body = Path(args[2]).read_bytes()
             label = plistlib.loads(body)["Label"]
@@ -162,4 +203,4 @@ class FakeLaunchctl:
             if body:
                 self._set_state(body, "stopped")
         return subprocess.CompletedProcess(args=["launchctl", *args], returncode=rc,
-                                           stdout="", stderr=stderr)
+                                           stdout=stdout, stderr=stderr)

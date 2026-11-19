@@ -129,7 +129,7 @@ def softnet_problem(softnet_dir: str,
     if problem is None:
         return None
     return (f"{problem}; Softnet must be root-owned and setuid in a root-owned directory. "
-            "Install it (after 'brew install openai/tools/softnet') with:\n"
+            "After 'brew install openai/tools/tart', which brings Softnet, install it with:\n"
             f"  sudo install -d -o root -g wheel -m 0755 {shlex.quote(softnet_dir)}\n"
             f"  sudo install -o root -g wheel -m 4555 \"$(brew --prefix softnet)/bin/softnet\" "
             f"{shlex.quote(binary)}")
@@ -442,11 +442,11 @@ class TartBackend:
         source = cfg["tart"]["base_image_source"]
         ui.ok(f"cloning {b} from {source}")
         self.tart.clone(source, b)
-        resources = cfg["defaults"]["resources"]
-        self._resize(b, resources["cpu"], resources["memory"], resources["disk"])
         # Whatever happens, the build VM ends up stopped and its job unloaded,
         # so a failed build leaves only a VM that 'tart delete' removes.
         try:
+            resources = cfg["defaults"]["resources"]
+            self._resize(b, resources["cpu"], resources["memory"], resources["disk"])
             ui.ok(f"starting {b}")
             self._boot(cfg, b, [])
             ui.ok("making the guest agent run as root")
@@ -464,7 +464,12 @@ class TartBackend:
         except AsbxError as e:
             raise AsbxError(f"{e}; delete the VM before retrying: tart delete {b}") from e
         finally:
-            self._halt(b)
+            forced = self._halt(b)
+        if forced:
+            # Forced off, the guest may not have written back the build's
+            # last changes, such as the final cleanup.
+            raise AsbxError(f"{b} did not power off by itself, so the image may lack its last "
+                            f"changes; delete the VM before retrying: tart delete {b}")
 
         ui.ok(f"publishing {b} as {alias}")
         if self.tart.exists(alias):
@@ -541,22 +546,39 @@ class TartBackend:
                 launchd.bootout(job_label(vm))
             raise
 
-    def _halt(self, vm: str) -> None:
-        """Shuts the guest down, then unloads its job. `tart stop` alone
-        terminates a Linux guest at once, losing whatever the guest hadn't
-        written back yet (seen: a build's last minute of changes), so the
-        guest powers itself off first and `tart stop` only forces a guest
-        that doesn't. A guest that powers off makes `tart run` exit cleanly,
-        which launchd doesn't restart. `sudo -n` works whether the agent runs
-        as root or, before `build-base` hardens it, as `admin`."""
+    def _halt(self, vm: str) -> bool:
+        """Shuts the guest down, then unloads its job; True when the guest
+        had to be forced off. `tart stop` alone terminates a Linux guest at
+        once, losing whatever the guest hadn't written back yet (seen: a
+        build's last minute of changes), so the guest powers itself off
+        first and `tart stop` only forces a guest that hasn't within
+        `POWEROFF_TIMEOUT`. The agent is guest-controlled, so the request
+        shares that budget: an agent that never answers is forced off too.
+        A guest that powers off makes `tart run` exit cleanly, which launchd
+        doesn't restart. `sudo -n` works whether the agent runs as root or,
+        before `build-base` hardens it, as `admin`."""
+        forced = False
         if self.state(vm) == RUNNING:
-            self.tart.exec(vm, ["sudo", "-n", "systemctl", "poweroff"], check=False)
             deadline = time.monotonic() + POWEROFF_TIMEOUT
+            self.tart.exec(vm, ["sudo", "-n", "systemctl", "poweroff"], check=False,
+                           timeout=POWEROFF_TIMEOUT)
             while self.state(vm) == RUNNING and time.monotonic() < deadline:
                 time.sleep(1)
-            if self.state(vm) == RUNNING:
+            forced = self.state(vm) == RUNNING
+            if forced:
                 ui.warn(f"{vm} did not power off within {POWEROFF_TIMEOUT}s; forcing it off")
-                self.tart.stop(vm)
+        self._force_off(vm)
+        return forced
+
+    def _force_off(self, vm: str) -> None:
+        """Stops `vm` without asking the guest, then unloads its job. `tart
+        stop` fails on a VM that stopped in the meantime (a guest that just
+        finished powering off), so only a VM still running after it is an
+        error."""
+        if self.state(vm) == RUNNING:
+            proc = self.tart.stop(vm, check=False)
+            if self.state(vm) == RUNNING:
+                raise AsbxError(f"command failed: tart stop {vm}\n{(proc.stderr or '').strip()}")
         launchd.bootout(job_label(vm))
 
     def _mount_shares(self, vm: str, vm_shares: list[Share], strict: bool) -> None:
@@ -595,8 +617,10 @@ class TartBackend:
             raise AsbxError(f"{instance} does not exist")
         if state == RUNNING:
             # Only asbx's job runs a sandbox with its egress rules; a VM
-            # started any other way may have none.
-            if not launchd.agent_loaded(job_label(instance)):
+            # started any other way may have none. The job's own `tart run`
+            # has to be running: after the guest powers itself off, the job
+            # stays loaded with no process while anything else may run the VM.
+            if not launchd.job_running(job_label(instance)):
                 raise AsbxError(f"{instance} is running outside asbx, possibly without its egress "
                                 f"policy; stop it with 'tart stop {instance}' and retry")
             self._wait_ready(instance)
@@ -627,8 +651,11 @@ class TartBackend:
         self.start(cfg, spec)
 
     def delete(self, instance: str) -> None:
+        """Forces the VM off without asking the guest: its disk is about to
+        go, and a guest that stalls or ignores a poweroff mustn't hold up
+        `rm`."""
         snaps = [snapshot_vm(instance, label) for label in self.snapshots(instance)]
-        self._halt(instance)
+        self._force_off(instance)
         vms = ([instance] if self.tart.exists(instance) else []) + snaps
         if vms:
             self.tart.delete(*vms)
@@ -685,24 +712,34 @@ class TartBackend:
             ui.ok(f"stopping {instance} for the snapshot")
             self._halt(instance)
         try:
-            self.tart.clone(instance, snap)
+            # The mark goes first, so a clone never exists unmarked, where
+            # nothing would track or delete it; a mark without its VM is ignored.
             meta = _read_state(instance)
             meta.pop(_BOOTED_JOB, None)
             _write_state(snap, {**meta, _SNAPSHOT_OF: instance})
+            self.tart.clone(instance, snap)
         finally:
             if running:
                 self.start(cfg, spec)
         ui.ok(f"snapshot {instance}/{label} created")
 
     def restore(self, cfg: dict, spec: SandboxSpec, label: str) -> None:
+        """The snapshot is cloned aside first, so a failed clone leaves the
+        sandbox untouched; only then is the sandbox forced off (its state
+        is being discarded), deleted and replaced by the clone."""
         instance = spec.instance
         if label not in self.snapshots(instance):
             raise AsbxError(f"{instance}: no snapshot named '{label}'")
         snap = snapshot_vm(instance, label)
-        self._halt(instance)
+        staged = f"{instance}-restoring"
+        if self.tart.exists(staged):
+            raise AsbxError(f"VM {staged} is in the way of the restore; if an interrupted restore "
+                            f"left it, delete it and retry: tart delete {staged}")
+        self.tart.clone(snap, staged)
+        self._force_off(instance)
         if self.tart.exists(instance):
             self.tart.delete(instance)
-        self.tart.clone(snap, instance)
+        self.tart.rename(staged, instance)
         meta = _read_state(snap)
         meta.pop(_SNAPSHOT_OF, None)
         _write_state(instance, meta)

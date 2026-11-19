@@ -117,10 +117,10 @@ def refresh_env(monkeypatch):
 def _running(fake: FakeIncus, *instances: str, stopped: tuple[str, ...] = ()) -> None:
     for inst in instances:
         fake.stub("info", inst)
-        fake.stub("list", inst, "--format", "json", stdout='[{"status": "Running"}]')
+        fake.stub("list", inst, "--format", "json", stdout=f'[{{"name": "{inst}", "status": "Running"}}]')
     for inst in stopped:
         fake.stub("info", inst)
-        fake.stub("list", inst, "--format", "json", stdout='[{"status": "Stopped"}]')
+        fake.stub("list", inst, "--format", "json", stdout=f'[{{"name": "{inst}", "status": "Stopped"}}]')
 
 
 def _pushed_instances(fake: FakeIncus) -> set[str]:

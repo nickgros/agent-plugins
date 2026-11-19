@@ -115,13 +115,27 @@ def test_cmd_up_leaves_the_nic_alone_when_the_acl_is_already_attached(up_env, cf
     assert ["start", "sandbox-demo"] not in fake.calls
 
 
-def test_cmd_up_refuses_an_instance_built_with_the_removed_guest_firewall_fallback(up_env, cfg):
+def test_cmd_up_attaches_the_acl_to_an_instance_built_with_the_removed_guest_firewall_fallback(up_env, cfg, capsys):
     fake = _existing_instance(cfg, egress_mode="guest-nft")
 
-    with pytest.raises(AsbxError, match="asbx rebuild demo"):
-        up.cmd_up(IncusBackend(fake), cfg, "demo", no_auth=True, no_provision=True)
+    up.cmd_up(IncusBackend(fake), cfg, "demo", no_auth=True, no_provision=True)
 
-    assert not any(c[:2] == ["config", "device"] for c in fake.calls)
+    assert any(c[:4] == ["config", "device", "override", "sandbox-demo"] for c in fake.calls)
+    assert _acl_attached(fake)
+    assert "asbx rebuild demo" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("prefix_match", ["sandbox-demo2", "sandbox-demo-snap-pre1"])
+def test_cmd_up_creates_a_sandbox_whose_name_only_prefixes_an_existing_instance(up_env, cfg, prefix_match):
+    # A sibling group's sandbox, or a snapshot copy left after `rebuild` deleted
+    # the sandbox, must not pass for the sandbox itself.
+    fake = _with_image(cfg, FakeIncus())
+    fake.set_instance(exists=True, state="Stopped", name=prefix_match)
+
+    up.cmd_up(IncusBackend(fake), cfg, "demo", no_auth=True, no_provision=True)
+
+    assert any(c[:3] == ["create", cfg["image_alias"], "sandbox-demo"] for c in fake.calls)
+    assert ["start", "sandbox-demo"] in fake.calls
 
 
 def test_cmd_up_syncs_harness_settings_before_auth_and_survives_a_sync_failure(up_env, cfg, monkeypatch, capsys):

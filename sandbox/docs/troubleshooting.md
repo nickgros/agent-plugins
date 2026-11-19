@@ -23,10 +23,11 @@ reports the version. Upgrade to Incus 7.0 LTS (the minimum is 6.0.4 or
 6.10). There is no weaker fallback
 ([ADR 0003](adr/0003-per-nic-egress-acl-fail-closed.md)).
 
-## `up` refuses a sandbox built with the in-guest firewall fallback
+## `up` warns about a sandbox built with the in-guest firewall fallback
 
-Its `egress_mode` is `guest-nft`, and the agent can turn that firewall off
-with root. Save your work and run `asbx rebuild <group>`.
+Its `egress_mode` was `guest-nft`. asbx attaches the NIC ACL before the
+sandbox boots, so it runs filtered, but the old in-guest rules are still
+there. Save your work and run `asbx rebuild <group>` to drop them.
 
 ## `up` refuses: firewall unit inactive or out of date (Incus)
 

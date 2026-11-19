@@ -202,9 +202,16 @@ def relay_tcp(name: str, port: int, stdin_fd: int = 0, stdout_fd: int = 1) -> No
             pass
 
     threading.Thread(target=upstream, daemon=True).start()
+    # A reset from the sandbox or a closed stdout (ssh exited) ends the relay
+    # quietly, like the remote closing.
     with sock:
-        while data := sock.recv(65536):
-            os.write(stdout_fd, data)
+        try:
+            while data := sock.recv(65536):
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(stdout_fd, view):]
+        except OSError:
+            pass
 
 
 def forget_host_key(known_hosts: Path, hostname: str) -> None:

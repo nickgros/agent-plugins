@@ -28,7 +28,8 @@ IPv4 only. All other internet egress is allowed.
 
 There is no fallback. `up` fails if Incus can't attach the ACL. A sandbox
 built under the removed in-guest nftables fallback
-(`egress_mode=guest-nft`) is refused by `up` and has to be rebuilt.
+(`egress_mode=guest-nft`) gets the ACL attached before it boots again, and
+`up` warns you to rebuild it.
 Rationale: [ADR 0003](adr/0003-per-nic-egress-acl-fail-closed.md).
 
 Known gap: IPv6 blocking covers only ULA and link-local. If your LAN hands
@@ -69,9 +70,11 @@ the directory and binary are root-owned, not group- or world-writable, and
 the binary is setuid. A user-writable copy behind a sudo rule would let any
 process running as the user gain root
 ([ADR 0006](adr/0006-one-backend-per-host-os.md)). `up` also refuses a
-sandbox VM that is running outside asbx's launchd job, since it may have
-been started without the rules. A changed rule set reaches a running VM
-only when it restarts; `up` restarts it.
+sandbox VM that is running outside asbx's launchd job: the job isn't
+loaded, or it is loaded but its own `tart run` has exited (as after the
+guest powers itself off) while something else runs the VM. Such a VM may
+have been started without the rules. A changed rule set reaches a running
+VM only when it restarts; `up` restarts it.
 
 The VM runs with `--no-clipboard` and `--no-audio`: no access to the Mac's
 pasteboard or microphone.

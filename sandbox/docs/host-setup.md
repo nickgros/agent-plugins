@@ -25,9 +25,11 @@ the `python3` that runs it lacks PyYAML.
 - Generates the SSH keypair `~/.config/agent-sandbox/id_ed25519`, unless it
   already exists.
 - Runs the backend's host checks. Incus: refreshes the network ACL on the
-  bridge. Tart: checks for `tart`, macOS 26+ and a root-owned setuid
-  Softnet. If that fails, `init` warns and continues; `asbx doctor` says
-  what's missing (on Incus, `asbx doctor --fix` creates the ACL).
+  bridge, then checks the ingress firewall if you have opted into it; a
+  firewall that isn't loaded doesn't stop the ACL refresh. Tart: checks for
+  `tart`, macOS 26+ and a root-owned setuid Softnet. A failure is a warning
+  and `init` continues; `asbx doctor` says what's missing (on Incus,
+  `asbx doctor --fix` creates the ACL).
 - Puts `Include ~/.ssh/agent-sandbox.d/*.conf` on the first line of
   `~/.ssh/config`, creating the file at mode `0600` if needed. The line has
   to come before any `Host` block for the per-instance configs to apply.
@@ -43,7 +45,9 @@ Bakes the image every sandbox is created from:
    `base_image_source` (`images:debian/13/cloud`) on Incus,
    `tart.base_image_source` (`ghcr.io/cirruslabs/debian:trixie`) on Tart.
    Its CPU, memory and disk are `defaults.resources`.
-2. Runs the base recipe, one bash script, as root. It installs Docker,
+2. Tart only: makes the guest agent run as root and deletes `admin`
+   ([below](#build-base-on-tart)).
+3. Runs the base recipe, one bash script, as root. It installs Docker,
    Node.js LTS, mise, the AWS CLI, and the harness CLIs (`@openai/codex`,
    `@google/gemini-cli`, opencode). It also runs the omp and Claude Code
    installers as the guest user (`~/.local/bin/omp`, `~/.local/bin/claude`,
@@ -57,10 +61,9 @@ Bakes the image every sandbox is created from:
    architecture (x86_64 or arm64).
    `asbx up` (not the image) owns `/etc/environment`, which puts mise shims
    and `~/.local/bin` on PATH for non-login shells.
-3. Copies the host binaries listed in `defaults.copy_binaries` (empty by
+4. Copies the host binaries listed in `defaults.copy_binaries` (empty by
    default) into the guest user's `~/.local/bin`. Non-ELF files (such as
    macOS builds) are skipped with a warning.
-4. Tart only: hardens the image ([below](#build-base-on-tart)).
 5. Cleans the VM and publishes it. Incus: as `agent-sandbox-base-<YYYYMMDD>`,
    then points the `agent-sandbox-base` alias at it. Tart: renames the VM to
    `agent-sandbox-base` (`image_alias`), replacing the previous one.
@@ -120,6 +123,11 @@ Linux. The recipe turns off SSH password logins on both backends (the stock
 image's cloud-init turns them on): it deletes every
 `/etc/ssh/sshd_config.d/*.conf` that sets `PasswordAuthentication yes` and
 writes `00-asbx.conf` with `PasswordAuthentication no`.
+
+Before publishing, the guest powers itself off, so its last changes reach
+the disk. If it hasn't within a minute, `build-base` forces it off with
+`tart stop` and fails instead of publishing an image that may lack them;
+delete `asbx-base-build` and retry.
 
 A VM named `image_alias` that `build-base` didn't publish doesn't count as a
 base image.
