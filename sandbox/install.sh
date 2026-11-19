@@ -26,14 +26,18 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 confirm() {
   local answer
   { printf '%s [y/N] ' "$1" >/dev/tty && read -r answer </dev/tty; } 2>/dev/null || return 1
-  [ "$answer" = y ] || [ "$answer" = Y ]
+  case "$answer" in [yY]|[yY][eE][sS]) return 0 ;; *) return 1 ;; esac
 }
 
 fetch_repo() {
-  command -v git >/dev/null || die "git is required"
+  command -v git >/dev/null || die "git is required; install it (macOS: xcode-select --install; Debian/Ubuntu: sudo apt install git) and rerun"
   if [ -d "$ASBX_HOME/.git" ]; then
+    local origin
+    origin=$(git -C "$ASBX_HOME" remote get-url origin 2>/dev/null || true)
+    [ "$origin" = "$REPO_URL" ] || die "$ASBX_HOME tracks '$origin', not $REPO_URL; set ASBX_HOME to another directory or fix its origin"
     say "updating $ASBX_HOME"
-    git -C "$ASBX_HOME" pull --ff-only --quiet
+    git -C "$ASBX_HOME" pull --ff-only --quiet \
+      || die "could not fast-forward $ASBX_HOME (local changes, or it diverged); fix it with git or move it aside"
   elif [ -e "$ASBX_HOME" ]; then
     die "$ASBX_HOME exists and is not a git checkout; move it aside or set ASBX_HOME"
   else
@@ -55,12 +59,23 @@ ensure_pyyaml() {
 # Softnet filters every sandbox's network and needs root, so the copy Tart
 # runs must be root-owned and setuid in a root-owned directory. Never a sudo
 # rule for the Homebrew copy: any process running as you could replace it.
+
+# Asks asbx itself, so the installer accepts exactly what `asbx up` accepts.
+softnet_safe() {
+  python3 - "$ASBX_HOME/sandbox" "$SOFTNET_DIR" <<'EOF'
+import sys
+sys.path.insert(0, sys.argv[1])
+from asbxlib.tartbackend import softnet_problem
+sys.exit(1 if softnet_problem(sys.argv[2]) else 0)
+EOF
+}
+
 install_softnet() {
   local src
   src="$(brew --prefix softnet)/bin/softnet"
   [ -x "$src" ] || die "softnet not found at $src; run 'brew install openai/tools/tart'"
-  if [ -u "$SOFTNET_DIR/softnet" ] && [ "$(stat -f %u "$SOFTNET_DIR/softnet")" = 0 ] \
-      && [ "$(stat -f %u "$SOFTNET_DIR")" = 0 ] && cmp -s "$src" "$SOFTNET_DIR/softnet"; then
+  # A byte match too, so a rerun after `brew upgrade` refreshes the copy.
+  if softnet_safe && cmp -s "$src" "$SOFTNET_DIR/softnet"; then
     say "softnet in $SOFTNET_DIR is up to date"
     return
   fi
