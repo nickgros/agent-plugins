@@ -56,10 +56,6 @@ ensure_pyyaml() {
   fi
 }
 
-# Softnet filters every sandbox's network and needs root, so the copy Tart
-# runs must be root-owned and setuid in a root-owned directory. Never a sudo
-# rule for the Homebrew copy: any process running as you could replace it.
-
 # Asks asbx itself, so the installer accepts exactly what `asbx up` accepts.
 softnet_safe() {
   python3 - "$ASBX_HOME/sandbox" "$SOFTNET_DIR" <<'EOF'
@@ -70,6 +66,9 @@ sys.exit(1 if softnet_problem(sys.argv[2]) else 0)
 EOF
 }
 
+# Softnet filters every sandbox's network and needs root, so the copy Tart
+# runs must be root-owned and setuid in a root-owned directory. Never a sudo
+# rule for the Homebrew copy: any process running as you could replace it.
 install_softnet() {
   local src
   src="$(brew --prefix softnet)/bin/softnet"
