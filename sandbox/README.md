@@ -32,22 +32,45 @@ Details: [docs/security.md](docs/security.md). Rationale:
 
 ## Requirements
 
-- Python 3 with PyYAML.
+- Python 3 with PyYAML, and git.
 - **Linux:** `/dev/kvm`, and Incus 7.0 LTS. The minimum is 6.0.4 on the
   6.0 LTS, or 6.10. Older versions can't attach an ACL to a bridged NIC.
-- **macOS:** 26 or later, Apple silicon. `brew install openai/tools/tart`
-  (pulls in softnet), then install Softnet root-owned and setuid
-  ([why](docs/host-setup.md#softnet)):
+- **macOS:** 26 or later, Apple silicon, Homebrew. Tart, with Softnet
+  installed root-owned and setuid ([why](docs/host-setup.md#softnet)); the
+  install script sets both up.
 
-  ```sh
-  sudo install -d -o root -g wheel -m 0755 /usr/local/libexec/asbx
-  sudo install -o root -g wheel -m 4555 "$(brew --prefix softnet)/bin/softnet" /usr/local/libexec/asbx/softnet
-  ```
+## Install
+
+asbx runs from a clone of this repository. The install script clones it to
+`~/.local/share/asbx` (or updates an existing clone), installs PyYAML with
+`pip --user` if `python3` lacks it, and links `asbx` into `~/.local/bin`. On
+macOS it also runs `brew install openai/tools/tart` and installs Softnet
+with `sudo`, after showing the commands and asking. Rerun it to update.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/nickgros/agent-plugins/main/sandbox/install.sh | bash
+```
+
+To read the script first, download it, review it, then run it with
+`bash install.sh`. It doesn't run until it has downloaded completely, and
+`ASBX_HOME` changes where it clones.
+
+By hand:
+
+```sh
+git clone https://github.com/nickgros/agent-plugins.git ~/.local/share/asbx
+~/.local/share/asbx/sandbox/asbx install   # symlink to ~/.local/bin/asbx
+# macOS: brew install openai/tools/tart, then
+sudo install -d -o root -g wheel -m 0755 /usr/local/libexec/asbx
+sudo install -o root -g wheel -m 4555 "$(brew --prefix softnet)/bin/softnet" /usr/local/libexec/asbx/softnet
+```
+
+Update a hand-made clone with `git -C ~/.local/share/asbx pull`. On macOS,
+redo the second `sudo install` after `brew upgrade` updates Softnet.
 
 ## Quick start
 
 ```sh
-sandbox/asbx install   # symlink to ~/.local/bin/asbx
 asbx init              # config, SSH key, network ACL, ~/.ssh/config Include
 asbx build-base        # bake the base image (several minutes)
 asbx doctor            # check host readiness; --fix repairs what it can

@@ -1,17 +1,29 @@
 # Host setup
 
-Once per host: `asbx install`, `asbx init`, `asbx build-base`, then, on
-Linux, configure name resolution. On macOS install Tart and Softnet first
-([macOS](#macos-tart)). Run `asbx doctor` at any time to see what's missing.
+Once per host: install (clone and link), `asbx init`, `asbx build-base`,
+then, on Linux, configure name resolution. On macOS install Tart and Softnet
+first ([macOS](#macos-tart)); the install script does both. Run
+`asbx doctor` at any time to see what's missing.
 
 ## Install
+
+asbx runs from a clone of this repository. `sandbox/install.sh` (one-liner
+in the [README](../README.md#install)) clones or updates it at `$ASBX_HOME`
+(default `~/.local/share/asbx`), installs PyYAML with `pip --user` when
+`python3` can't import it, and runs `asbx install`. On macOS it first checks
+for Apple silicon and macOS 26, runs `brew install openai/tools/tart` if Tart
+is missing, and installs [Softnet](#softnet) with `sudo` after asking,
+skipping that when the installed copy already matches Homebrew's. Without a
+terminal to answer on, it skips the `sudo` step and prints the commands. On
+Linux it installs nothing system-wide; set up Incus yourself.
 
 ```
 sandbox/asbx install [--force]
 ```
 
 Creates a symlink to the script at `~/.local/bin/asbx`. `--force` replaces
-whatever is already at that path. Warns if `~/.local/bin` is not on `$PATH`.
+whatever is already at that path; the install script passes it only when that
+path is already a symlink. Warns if `~/.local/bin` is not on `$PATH`.
 The script exits with `asbx requires PyYAML: pip install --user pyyaml` if
 the `python3` that runs it lacks PyYAML.
 
@@ -84,6 +96,7 @@ can only grow a disk, so a smaller `resources.disk` keeps the image's size.
 ### Install
 
 macOS 26 or later (Softnet requires it), Apple silicon, Python 3 with PyYAML.
+The [install script](#install) does this and the Softnet step below; by hand:
 
 ```
 brew install openai/tools/tart     # pulls in softnet
@@ -308,4 +321,5 @@ misconfiguration and a host firewall drop the same way.
 `--fix` repairs the host-side items it can: the `~/.ssh/config` Include
 line, and on Incus the network ACL and, on a host that has opted in, the
 firewall unit through sudo. It never installs the firewall on a host that
-hasn't. On Tart it changes nothing else: installing Softnet needs sudo.
+hasn't. On Tart it changes nothing else: installing Softnet needs sudo, so
+rerun `sandbox/install.sh` (or the commands under [Softnet](#softnet)).
