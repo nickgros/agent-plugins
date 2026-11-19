@@ -18,6 +18,5 @@ tools:
   java: corretto-21
   maven: "3.9"
   pnpm: 10
-  worktrunk: "0.81.0"
 setup: synapse-provision.sh
 harness_credentials: [omp-mcp, omp-env]
